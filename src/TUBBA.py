@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (
     QProgressBar)
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import Qt, QTimer
+import traceback
 
 ## Custom Widgets
 class DeletableListWidget(QListWidget):
@@ -121,7 +122,7 @@ class TUBBALauncher(QWidget):
         self.new_project_window.show()
 
     def load_project(self):
-        from TUBBAvidAnn import VideoAnnotator
+        from TUBBA_vidAnn import VideoAnnotator
 
         options = QFileDialog.Options()
         path, _ = QFileDialog.getOpenFileName(
@@ -318,7 +319,7 @@ class NewProjectWindow(QWidget):
             self.downsampling_factor = 1.0
 
     def preprocess_data(self):
-        from getTUBBAFeats import dlcToFeatures
+        from TUBBA_getFeats import dlcToFeatures
 
         if not self.folders:
             print("Error: No folders to process!")
@@ -353,8 +354,7 @@ class NewProjectWindow(QWidget):
                 video_statuses.append(vidInfo)
             except Exception as e:
                 print(f"❌ Error processing {folder}: {e}")
-
-        self.processing_window.finish()
+                traceback.print_exc()
 
         # Update your GUI list
         self.processed_list.clear()
@@ -364,7 +364,7 @@ class NewProjectWindow(QWidget):
         self.video_statuses = video_statuses
 
     def next_step(self):
-        from TUBBAvidAnn import VideoAnnotator
+        from TUBBA_vidAnn import VideoAnnotator
 
         # --- Check that we have at least 1 behavior and 1 video
         if len(self.behaviors) == 0:
@@ -427,7 +427,7 @@ class NewProjectWindow(QWidget):
                 json.dump(project, f, indent=4)
 
             print(f"✅ Project saved to {save_path}")
-            self.project_path = self.project_path
+            self.project['project_path'] = save_path
 
         print("🚀 Launching Video Annotator...")
         self.video_annotator_window = VideoAnnotator(self.project)
