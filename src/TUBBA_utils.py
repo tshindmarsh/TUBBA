@@ -248,53 +248,68 @@ def detect_circle_region(frame):
         return circles[0, 0]  # Return the first detected circle (x, y, radius)
     return None
 
-def predictions_to_video(source_video_path, predictions_path, behavior, out_path=None):
-    """Save a stitched video containing only predicted positive frames for a behavior."""
-    import os
-    import joblib
-    import numpy as np
+def predictions_to_video(
+    source_video_path,
+    predictions_path,
+    behavior,
+    out_path=None,
+    preFrames=0,
+    postFrames=0
+):
     import cv2
+    import numpy as np
+    import joblib
+    import os
 
-    # Load predictions from file if path is given
+    # Load predictions
     if isinstance(predictions_path, str):
         predictions = joblib.load(predictions_path)["predictions"]
     else:
         predictions = predictions_path
 
+    behavior_array = np.array(predictions[behavior])
+    frame_count = len(behavior_array)
+
+    # Find bouts and expand with buffer
+    def find_bouts(arr):
+        onsets = np.where(np.diff(np.pad(arr.astype(int), (1, 0))) == 1)[0]
+        offsets = np.where(np.diff(np.pad(arr.astype(int), (0, 1))) == -1)[0]
+        return list(zip(onsets, offsets))
+
+    bouts = find_bouts(behavior_array)
+    frame_indices = set()
+    for start, end in bouts:
+        s = max(0, start - preFrames)
+        e = min(frame_count, end + postFrames)
+        frame_indices.update(range(s, e))
+    frame_indices = sorted(frame_indices)
+
+    if out_path is None:
+        basename = os.path.basename(source_video_path).rsplit(".", 1)[0]
+        out_path = os.path.join(os.path.dirname(source_video_path), f"{basename}_predicted_{behavior}.mp4")
+
+    # Set up video
     cap = cv2.VideoCapture(source_video_path)
     if not cap.isOpened():
         raise IOError(f"Cannot open video: {source_video_path}")
-
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    preds = np.array(predictions[behavior])
-    assert len(preds) == n_frames, f"Prediction length ({len(preds)}) != video frame count ({n_frames})"
-
-    # Generate output path if not specified
-    if out_path is None:
-        base, ext = os.path.splitext(source_video_path)
-        out_path = f"{base}_predicted_{behavior}{ext}"
-
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
 
-    # Only get the frames with predicted 1
-    positive_indices = np.flatnonzero(preds == 1)
+    print(f"🎬 Writing {len(frame_indices)} frames for behavior '{behavior}' to {out_path}")
 
-    for i in positive_indices:
+    # Efficiently grab only needed frames
+    for i in frame_indices:
         cap.set(cv2.CAP_PROP_POS_FRAMES, i)
         ret, frame = cap.read()
-        if not ret:
-            print(f"⚠️ Skipped frame {i} (could not read)")
-            continue
-        out.write(frame)
+        if ret:
+            out.write(frame)
 
     cap.release()
     out.release()
-    print(f"✅ Saved: {out_path}")
+    print("✅ Done.")
 
 import os
 import json

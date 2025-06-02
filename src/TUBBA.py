@@ -483,6 +483,8 @@ class NewProjectWindow(QWidget):
                 except Exception as e:
                     print(f"❌ Error processing {folder}: {e}")
                     traceback.print_exc()
+                    folder_name = os.path.basename(folder)
+                    processed_list.append(f"{folder_name}  ✗")
         else:
             print("❌ No feature extraction module selected or module not found. Ensure"
                   "feature module has an tracks2Features function.")

@@ -166,12 +166,15 @@ def train_TUBBAmodel(project_json_path, window_size=26, lstm_epochs=1000):
         project = json.load(f)
 
     # Select device
-    if torch.backends.mps.is_available():
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print("✅ Using CUDA (NVIDIA GPU)")
+    elif torch.backends.mps.is_available():
         device = torch.device("mps")
-        print("✅ Using MPS (Apple Metal) backend")
+        print("✅ Using MPS (Apple Metal GPU)")
     else:
         device = torch.device("cpu")
-        print("⚠️ MPS not available — falling back to CPU")
+        print("⚠️ No GPU backend found — falling back to CPU")
 
     # Check if all videos already have normalized features
     all_feats_normed = True
@@ -219,6 +222,7 @@ def train_TUBBAmodel(project_json_path, window_size=26, lstm_epochs=1000):
             X = normalize_features(video['loadedFeatures'], zscore_stats, minmax_stats)
             X = imputer.fit_transform(X)
             np.save(cache_path, X)
+            print(f"✅ Normalized features for {video['name']}")
     else:
         sample_feature_path = os.path.join(project['videos'][0]['folder'], project['videos'][0]['featureFile'])
         df = pd.read_hdf(sample_feature_path, key='perframes')
@@ -236,62 +240,57 @@ def train_TUBBAmodel(project_json_path, window_size=26, lstm_epochs=1000):
 
     # --- Train XGB per behavior ---
     for behavior in behaviors:
-        X_frames, y_frames = [], []
-
-        print(f"🧠 Augmenting training data for behavior: {behavior}")
+        X_all = []
+        y_all = []
 
         for video in project['videos']:
             cache_path = os.path.join(video['folder'], 'normed_features.npy')
             if not os.path.isfile(cache_path):
                 continue
 
-            X = np.load(cache_path)
+            try:
+                X = np.load(cache_path)
+            except Exception as e:
+                print(f"❌ Failed to load {cache_path}: {e}")
+                continue
 
             y = np.full(len(X), np.nan)
             for (start, end, val) in video.get('annotations', {}).get(behavior, []):
                 if val in [-1, 1]:
                     y[start:end + 1] = val
 
-            # Store frames with their labels
-            X_frames.append(X)
-            y_frames.append(y)
+            mask = ~np.isnan(y)
+            if np.sum(mask) == 0:
+                continue
 
-        if not X_frames:
-            print(f"⚠️ No training data for behavior: {behavior}; Please provide at least one positive and one negative example.")
-            return None
+            y_masked = np.where(y[mask] == -1, 0, y[mask])
+            X_masked = X[mask]
 
-        # Augment data first
-        X_frames, y_frames = augment_labeled_frames(X_frames, y_frames, noise_factor=0.03, copies=3, name=behavior)
+            X_all.append(X_masked)
+            y_all.append(y_masked)
 
-        # Combine all frames
-        X_all = np.vstack(X_frames)
-        y_all = np.concatenate(y_frames)
+        if not X_all:
+            print(f"⚠️ No valid training data for behavior: {behavior}")
+            continue
 
-        # Remove NaNs
-        mask = ~np.isnan(y_all)
-        X_all = X_all[mask]
-        y_all = y_all[mask]
+        X_all = np.vstack(X_all)
+        y_all = np.concatenate(y_all)
 
-        # Convert -1 to 0 for binary classification
-        y_xgb = np.where(y_all == -1, 0, y_all)
-
-        # Compute sample weights (inverse frequency)
-        pos_frac = np.mean(y_xgb == 1)
+        pos_frac = np.mean(y_all == 1)
         neg_frac = 1 - pos_frac
-        sample_weights = np.where(y_xgb == 1, 1 / (pos_frac + 1e-6), 1 / (neg_frac + 1e-6))
+        sample_weights = np.where(y_all == 1, 1 / (pos_frac + 1e-6), 1 / (neg_frac + 1e-6))
+
+        if len(X_all) == 0 or pos_frac == 1 or neg_frac == 1:
+             print(f"⚠️ No balanced data available for behavior: {behavior}")
+             continue
 
         # Skipping this in favor of pos/neg weighting
             # Now use the balanced frame samples function to create a balanced dataset
             # Use target_ratio=(1, 1, 0.2) to include some unlabeled samples (0.2x the limiting class)
             # X_balanced, y_balanced = create_balanced_frame_samples(X_frames, y_frames, target_ratio=(1, 1, 0))
 
-        if len(X_all) == 0 or pos_frac == 1 or neg_frac == 1:
-             print(f"⚠️ No balanced data available for behavior: {behavior}")
-             continue
-
-        # Split with stratification
         X_train, X_val, y_train, y_val, w_train, w_val = train_test_split(
-            X_all, y_xgb, sample_weights, test_size=0.1, stratify=y_xgb
+            X_all, y_all, sample_weights, test_size=0.1, stratify=y_all
         )
 
         # Train XGBoost model
@@ -470,6 +469,8 @@ def train_TUBBAmodel_lite(project_json_path):
                 X = normalize_features(video['loadedFeatures'], zscore_stats, minmax_stats)
                 X = imputer.fit_transform(X)
                 np.save(cache_path, X)
+
+                print(f"✅ Normalized features for {video['name']}")
         else:
             sample_feature_path = os.path.join(project['videos'][0]['folder'], project['videos'][0]['featureFile'])
             df = pd.read_hdf(sample_feature_path, key='perframes')
@@ -485,48 +486,51 @@ def train_TUBBAmodel_lite(project_json_path):
     }
 
     for behavior in behaviors:
-        X_frames, y_frames = [], []
 
         print(f"🧠 Training lightweight XGB for behavior: {behavior}")
+
+        X_all = []
+        y_all = []
 
         for video in project['videos']:
             cache_path = os.path.join(video['folder'], 'normed_features.npy')
             if not os.path.isfile(cache_path):
                 continue
 
-            X = np.load(cache_path)
+            try:
+                X = np.load(cache_path)
+            except Exception as e:
+                print(f"❌ Failed to load {cache_path}: {e}")
+                continue
 
             y = np.full(len(X), np.nan)
             for (start, end, val) in video.get('annotations', {}).get(behavior, []):
                 if val in [-1, 1]:
                     y[start:end + 1] = val
 
-            X_frames.append(X)
-            y_frames.append(y)
+            mask = ~np.isnan(y)
+            if np.sum(mask) == 0:
+                continue
 
-        if not X_frames:
-            print(f"⚠️ No training data for behavior: {behavior}")
-            continue
+            y_masked = np.where(y[mask] == -1, 0, y[mask])
+            X_masked = X[mask]
 
-        X_all = np.vstack(X_frames)
-        y_all = np.concatenate(y_frames)
+            X_all.append(X_masked)
+            y_all.append(y_masked)
 
-        mask = ~np.isnan(y_all)
-        X_all = X_all[mask]
-        y_all = y_all[mask]
-
-        y_xgb = np.where(y_all == -1, 0, y_all)
-
-        if len(X_all) == 0 or np.all(y_xgb == 1) or np.all(y_xgb == 0):
+        if not X_all:
             print(f"⚠️ No valid training data for behavior: {behavior}")
             continue
 
-        pos_frac = np.mean(y_xgb == 1)
+        X_all = np.vstack(X_all)
+        y_all = np.concatenate(y_all)
+
+        pos_frac = np.mean(y_all == 1)
         neg_frac = 1 - pos_frac
-        sample_weights = np.where(y_xgb == 1, 1 / (pos_frac + 1e-6), 1 / (neg_frac + 1e-6))
+        sample_weights = np.where(y_all == 1, 1 / (pos_frac + 1e-6), 1 / (neg_frac + 1e-6))
 
         X_train, X_val, y_train, y_val, w_train, w_val = train_test_split(
-            X_all, y_xgb, sample_weights, test_size=0.1, stratify=y_xgb
+            X_all, y_all, sample_weights, test_size=0.1, stratify=y_all
         )
 
         # Train XGBoost model
