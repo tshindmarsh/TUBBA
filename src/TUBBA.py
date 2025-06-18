@@ -3,10 +3,14 @@ import os
 import json
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QPushButton, QLabel, QVBoxLayout, QHBoxLayout, QListWidget,
-    QInputDialog,QFileDialog,QListView, QTreeView, QCheckBox, QProgressDialog, QDialog,
-    QProgressBar)
+    QInputDialog, QFileDialog, QListView, QTreeView, QCheckBox, QProgressDialog, QDialog,
+    QProgressBar, QComboBox)
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import Qt, QTimer
+import traceback
+import cv2
+import importlib.util
+
 
 ## Custom Widgets
 class DeletableListWidget(QListWidget):
@@ -26,6 +30,7 @@ class DeletableListWidget(QListWidget):
             self.clearSelection()
         else:
             super().keyPressEvent(event)
+
 
 class ProcessingWindow(QDialog):
     def __init__(self, total_folders, parent=None):
@@ -57,6 +62,7 @@ class ProcessingWindow(QDialog):
         self.progress_bar.setValue(self.progress_bar.maximum())
         QApplication.processEvents()
         self.close()
+
 
 ## Main Functions
 class TUBBALauncher(QWidget):
@@ -100,14 +106,14 @@ class TUBBALauncher(QWidget):
 
         # New Project Button
         new_proj_btn = QPushButton("New Project")
-        new_proj_btn.setFixedSize(100, 45)
+        new_proj_btn.setFixedSize(120, 50)
         new_proj_btn.setStyleSheet(button_style)
         new_proj_btn.clicked.connect(self.new_project)
         button_layout.addWidget(new_proj_btn)
 
         # Load Project Button
         load_proj_btn = QPushButton("Load Project")
-        load_proj_btn.setFixedSize(100, 45)
+        load_proj_btn.setFixedSize(120, 50)
         load_proj_btn.setStyleSheet(button_style)
         load_proj_btn.clicked.connect(self.load_project)
         button_layout.addWidget(load_proj_btn)
@@ -121,7 +127,8 @@ class TUBBALauncher(QWidget):
         self.new_project_window.show()
 
     def load_project(self):
-        from TUBBAvidAnn import VideoAnnotator
+        from TUBBA_vidAnn import VideoAnnotator
+        from TUBBA_vidAnn_noInference import VideoAnnotator_noInf
 
         options = QFileDialog.Options()
         path, _ = QFileDialog.getOpenFileName(
@@ -139,12 +146,22 @@ class TUBBALauncher(QWidget):
                 # Very important:
                 project['project_path'] = path
 
-                print("✅ Project loaded. Launching Annotator...")
-                self.video_annotator_window = VideoAnnotator(project)
+                if project['annotation_only']:
+                    print("🚀 Launching Video Annotator in annotation-only mode...")
+                    self.video_annotator_window = VideoAnnotator_noInf(project)
+                    self.video_annotator_window.show()
+                    self.close()
+                else:
+                    print("🚀 Launching Video Annotator...")
+                    self.video_annotator_window = VideoAnnotator(project)
+                    self.video_annotator_window.show()
+                    self.close()
+
                 self.video_annotator_window.show()
                 self.close()
             except Exception as e:
                 print(f"❌ Failed to load project: {e}")
+                traceback.print_exc()
 
 class NewProjectWindow(QWidget):
     def __init__(self):
@@ -159,6 +176,7 @@ class NewProjectWindow(QWidget):
         self.processed_videos = []
 
         self.downsampledData = False
+        self.annotation_only_mode = False
         self.downsampling_factor = 1.0
         self.project_path = ''
 
@@ -223,30 +241,75 @@ class NewProjectWindow(QWidget):
         add_data_btn.clicked.connect(self.add_data)
         button_layout.addWidget(add_data_btn)
 
-        preprocess_btn = QPushButton("Pre-process Data")
-        preprocess_btn.setStyleSheet(button_style)
-        preprocess_btn.clicked.connect(self.preprocess_data)
-        button_layout.addWidget(preprocess_btn)
+        self.preprocess_btn = QPushButton("Pre-process Data")
+        self.preprocess_btn.setStyleSheet(button_style)
+        self.preprocess_btn.clicked.connect(self.preprocess_data)
+        button_layout.addWidget(self.preprocess_btn)
 
         layout.addLayout(button_layout)
 
-        # Bottom layer (checkbox and Next button)
-        bottom_layout = QHBoxLayout()
+        # Bottom section - restructured layout
+        bottom_section_layout = QHBoxLayout()
+
+        # Left side - checkboxes and feature selector in vertical layout
+        left_controls_layout = QVBoxLayout()
+
+        # Checkboxes row
+        checkboxes_layout = QHBoxLayout()
 
         self.downsample_checkbox = QCheckBox("Downsampled Videos?")
         self.downsample_checkbox.setStyleSheet("color: white;")
         self.downsample_checkbox.stateChanged.connect(self.handle_downsample_checkbox)
-        bottom_layout.addWidget(self.downsample_checkbox, alignment=Qt.AlignCenter)
+        checkboxes_layout.addWidget(self.downsample_checkbox)
 
-        bottom_layout.addStretch()
+        self.annotation_only_checkbox = QCheckBox("Annotation only project?")
+        self.annotation_only_checkbox.setStyleSheet("color: white;")
+        self.annotation_only_checkbox.stateChanged.connect(self.handle_annotation_only_checkbox)
+        checkboxes_layout.addWidget(self.annotation_only_checkbox)
 
+        # Add stretch to keep checkboxes left-aligned
+        checkboxes_layout.addStretch()
+
+        left_controls_layout.addLayout(checkboxes_layout)
+
+        # Feature extraction script selector row
+        feature_layout = QHBoxLayout()
+
+        label = QLabel("Feature extraction algorithm:")
+        label.setStyleSheet("color: #00A4FF; font-weight: bold;")
+        feature_layout.addWidget(label)
+
+        self.feature_selector = QComboBox()
+        self.feature_selector.setStyleSheet("color: #00A4FF;")
+        self.feature_selector.addItem("Loading...")  # Temporary entry
+        feature_layout.addWidget(self.feature_selector)
+
+        # Add stretch to keep feature selector left-aligned
+        feature_layout.addStretch()
+
+        left_controls_layout.addLayout(feature_layout)
+
+        # Add the left controls to the bottom section
+        bottom_section_layout.addLayout(left_controls_layout)
+
+        # Add stretch to push Next button to the right
+        bottom_section_layout.addStretch()
+
+        # Right side - Next button (spans both rows visually)
         next_btn = QPushButton("Next")
         next_btn.setStyleSheet(button_style)
-        next_btn.setMinimumSize(100, 30)
+        next_btn.setMinimumSize(100, 60)
         next_btn.clicked.connect(self.next_step)
-        bottom_layout.addWidget(next_btn, alignment=Qt.AlignRight)
+        bottom_section_layout.addWidget(next_btn, alignment=Qt.AlignRight | Qt.AlignVCenter)
 
-        layout.addLayout(bottom_layout)
+        # Populate the dropdown from src/featureExtractions
+        script_dir = os.path.join(os.path.dirname(__file__), 'featureExtractions')
+        if os.path.isdir(script_dir):
+            scripts = [f for f in os.listdir(script_dir) if f.endswith('.py')]
+            self.feature_selector.clear()
+            self.feature_selector.addItems(scripts)
+
+        layout.addLayout(bottom_section_layout)
 
         self.setLayout(layout)
 
@@ -267,13 +330,34 @@ class NewProjectWindow(QWidget):
 
     def add_data(self):
         old_style = self.styleSheet()  # Save your black style
-        self.setStyleSheet("")
+        # Apply safe styling directly to dialog
+        self.setStyleSheet("""
+                QFileDialog {
+                    background-color: white;
+                    color: black;
+                }
+                QFileDialog QListView {
+                    background-color: white;
+                    color: black;
+                }
+                QFileDialog QTreeView {
+                    background-color: white;
+                    color: black;
+                }
+                QFileDialog QLabel {
+                    color: black;
+                }
+            """)
 
         dialog = QFileDialog(self)
         dialog.setWindowTitle("Select Data Folders")
         dialog.setOption(QFileDialog.DontUseNativeDialog, True)
         dialog.setFileMode(QFileDialog.Directory)
-        dialog.setOption(QFileDialog.ShowDirsOnly, True)
+        if self.annotation_only_mode:
+            dialog.setOption(QFileDialog.ShowDirsOnly, False)
+            dialog.setNameFilter("Video Files (*.mp4 *.avi *.mov *.mkv)")
+        else:
+            dialog.setOption(QFileDialog.ShowDirsOnly, True)
 
         # Enable multiple selection
         dialog.findChild(QListView, 'listView').setSelectionMode(QListView.MultiSelection)
@@ -317,8 +401,66 @@ class NewProjectWindow(QWidget):
             self.downsampledData = False
             self.downsampling_factor = 1.0
 
+    def handle_annotation_only_checkbox(self, state):
+        if state == Qt.Checked:
+            button_style = """
+                                QPushButton {
+                                    background-color: #444444;
+                                    color: white;
+                                    border: 1px solid gray;
+                                    border-style: outset;
+                                    border-radius: 4px;
+                                    padding: 4px;
+                                    font: bold 12px;
+                                }
+                                QPushButton:pressed {
+                                    border-style: inset;
+                                }
+                                """
+
+            listWin_style = """background-color: #444444;
+                                    color: white;
+                                    border: 1px solid gray;
+                                    border-style: outset;
+                                    border-radius: 4px;
+                                    padding: 4px;
+                                    font: bold 14px;
+                                """
+
+            self.preprocess_btn.setEnabled(False)
+            self.preprocess_btn.setStyleSheet(button_style)
+            self.processed_list.setStyleSheet(listWin_style)
+            self.annotation_only_mode = True
+        else:
+            button_style = """
+                                QPushButton {
+                                    background-color: black;
+                                    color: white;
+                                    border: 1px solid gray;
+                                    border-style: outset;
+                                    border-radius: 4px;
+                                    padding: 4px;
+                                    font: bold 12px;
+                                }
+                                QPushButton:pressed {
+                                    border-style: inset;
+                                }
+                            """
+            listWin_style = """background-color: black;
+                                    color: white;
+                                    border: 1px solid gray;
+                                    border-style: outset;
+                                    border-radius: 4px;
+                                    padding: 4px;
+                                    font: bold 14px;
+                                """
+
+            self.preprocess_btn.setEnabled(True)
+            self.preprocess_btn.setStyleSheet(button_style)
+            self.processed_list.setStyleSheet(listWin_style)
+            self.annotation_only_mode = False
+
     def preprocess_data(self):
-        from getTUBBAFeats import dlcToFeatures
 
         if not self.folders:
             print("Error: No folders to process!")
@@ -340,31 +482,42 @@ class NewProjectWindow(QWidget):
         progress_window = ProcessingWindow(len(self.folders), self)
         progress_window.show()
 
-        for i, folder in enumerate(self.folders):
-            progress_window.update_progress(i + 1, len(self.folders))
+        feature_module = self.get_selected_feature_module()
+        if feature_module and hasattr(feature_module, 'tracksToFeatures'):
 
-            try:
-                vidInfo = dlcToFeatures(folder, spatialSR)
-                folder_name = os.path.basename(folder)
-                if vidInfo['status'] > 0:
-                    processed_list.append(f"{folder_name}  ✓")
-                else:
+            for i, folder in enumerate(self.folders):
+                progress_window.update_progress(i + 1, len(self.folders))
+
+                try:
+                    vidInfo = feature_module.tracksToFeatures(folder, spatialSR)
+                    folder_name = os.path.basename(folder)
+                    if vidInfo['status'] > 0:
+                        processed_list.append(f"{folder_name}  ✓")
+
+                    else:
+                        processed_list.append(f"{folder_name}  ✗")
+                    video_statuses.append(vidInfo)
+                except Exception as e:
+                    print(f"❌ Error processing {folder}: {e}")
+                    traceback.print_exc()
+                    folder_name = os.path.basename(folder)
                     processed_list.append(f"{folder_name}  ✗")
-                video_statuses.append(vidInfo)
-            except Exception as e:
-                print(f"❌ Error processing {folder}: {e}")
-
-        self.processing_window.finish()
+        else:
+            print("❌ No feature extraction module selected or module not found. Ensure"
+                  "feature module has an tracks2Features function.")
+            return
 
         # Update your GUI list
         self.processed_list.clear()
         self.processed_list.addItems(processed_list)
+        self.featureExtractionAlgorithmUsed = self.feature_selector.currentText()
 
         self.processed_videos = processed_list
         self.video_statuses = video_statuses
 
     def next_step(self):
-        from TUBBAvidAnn import VideoAnnotator
+        from TUBBA_vidAnn import VideoAnnotator
+        from TUBBA_vidAnn_noInference import VideoAnnotator_noInf
 
         # --- Check that we have at least 1 behavior and 1 video
         if len(self.behaviors) == 0:
@@ -381,39 +534,70 @@ class NewProjectWindow(QWidget):
             'videos': [],
         }
 
-        for idx, folder in enumerate(self.folders):
-            folder_name = os.path.basename(folder)
+        # Check if we are in annotation-only mode
+        if self.annotation_only_mode:
+            project['annotation_only'] = True
+            project['featureExtractionAlgorithm']: None
 
-            # Try to load vidInfo if exists (later we can load it if needed)
-            feature_file = 'perframe_feats.h5'
-            feature_path = os.path.join(folder, feature_file)
+            for video_path in self.folders:  # folders actually contain video files here
+                video_name = os.path.basename(video_path)
+                folder = os.path.dirname(video_path)
 
-            # Fallback defaults if no pre-processing was done
-            nFrames = None
-            frameRate = None
-            samplingRate = getattr(self, 'spatialSR', 1.0)
+                video_path = os.path.join(folder, video_name)
+                vc = cv2.VideoCapture(video_path)
 
-            # You had already processed them earlier (processed_videos)
-            if idx < len(self.video_statuses):
-                vidInfo = self.video_statuses[idx]
-                nFrames = vidInfo.get('nframes', None)
-                frameRate = vidInfo.get('frameRate', 50)
-                samplingRate = vidInfo.get('samplingRate', 1.0)
+                if self.downsampledData:
+                    spatialSR = self.downsampling_factor
+                else:
+                    spatialSR = 1.0
 
-                # Build video entry
                 video_entry = {
-                    'name': vidInfo.get('name', None),
+                    'name': video_name,
                     'folder': folder,
-                    'nFrames': nFrames,
-                    'frameRate': frameRate,
-                    'samplingRate': samplingRate,
-                    'featureFile': feature_file,
-                    'annotations': {},  # Start empty
+                    'nFrames': int(vc.get(cv2.CAP_PROP_FRAME_COUNT)),
+                    'frameRate': int(vc.get(cv2.CAP_PROP_FPS)),
+                    'samplingRate': spatialSR,
+                    'featureFile': None,
+                    'annotations': {},
                 }
+
                 project['videos'].append(video_entry)
+        else:
+            for idx, folder in enumerate(self.folders):
+                project['annotation_only'] = False
+                project['featureExtractionAlgorithm'] = self.featureExtractionAlgorithmUsed
+                folder_name = os.path.basename(folder)
+
+                # Try to load vidInfo if exists (later we can load it if needed)
+                feature_file = 'perframe_feats.h5'
+                feature_path = os.path.join(folder, feature_file)
+
+                # Fallback defaults if no pre-processing was done
+                nFrames = None
+                frameRate = None
+                samplingRate = getattr(self, 'spatialSR', 1.0)
+
+                # You had already processed them earlier (processed_videos)
+                if idx < len(self.video_statuses):
+                    vidInfo = self.video_statuses[idx]
+                    nFrames = vidInfo.get('nframes', None)
+                    frameRate = vidInfo.get('frameRate', 50)
+                    samplingRate = vidInfo.get('samplingRate', 1.0)
+
+                    # Build video entry
+                    video_entry = {
+                        'name': vidInfo.get('name', None),
+                        'folder': folder,
+                        'nFrames': nFrames,
+                        'frameRate': frameRate,
+                        'samplingRate': samplingRate,
+                        'featureFile': feature_file,
+                        'annotations': {},
+                    }
+                    project['videos'].append(video_entry)
 
         self.project = project
-        
+
         # --- Ask user for save location
         save_path, _ = QFileDialog.getSaveFileName(
             self,
@@ -427,14 +611,36 @@ class NewProjectWindow(QWidget):
                 json.dump(project, f, indent=4)
 
             print(f"✅ Project saved to {save_path}")
-            self.project_path = self.project_path
+            self.project['project_path'] = save_path
 
-        print("🚀 Launching Video Annotator...")
-        self.video_annotator_window = VideoAnnotator(self.project)
-        self.video_annotator_window.show()
-        self.close()
+        # --- Launch the Video Annotator
+        if self.annotation_only_mode:
+            print("🚀 Launching Video Annotator in annotation-only mode...")
+            self.video_annotator_window = VideoAnnotator_noInf(self.project)
+            self.video_annotator_window.show()
+            self.close()
+        else:
+            print("🚀 Launching Video Annotator...")
+            self.video_annotator_window = VideoAnnotator(self.project)
+            self.video_annotator_window.show()
+            self.close()
 
-        self.close()  # Close the NewProjectWindow
+    def get_selected_feature_module(self):
+        """Get the currently selected feature extraction module"""
+        selected_script = self.feature_selector.currentText()
+        if not selected_script or selected_script == "Loading...":
+            return None
+
+        # Build the full path to the script
+        script_dir = os.path.join(os.path.dirname(__file__), 'featureExtractions')
+        script_path = os.path.join(script_dir, selected_script)
+
+        # Import the module dynamically
+        spec = importlib.util.spec_from_file_location("feature_module", script_path)
+        feature_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(feature_module)
+
+        return feature_module
 
 ## Entry point
 if __name__ == '__main__':
@@ -442,3 +648,4 @@ if __name__ == '__main__':
     window = TUBBALauncher()
     window.show()
     sys.exit(app.exec_())
+

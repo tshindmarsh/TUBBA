@@ -1,14 +1,20 @@
 import os
 import cv2
 import numpy as np
+import csv
 import pandas as pd
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,QMessageBox,
-                             QPushButton, QSlider, QFileDialog, QListWidget,
-                             QGroupBox, QComboBox,QSizePolicy, QShortcut)
+from matplotlib import cm
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,QMessageBox, QInputDialog,
+                             QPushButton, QSlider, QFileDialog, QListWidget,QMenu, QAction,
+                             QGroupBox, QComboBox,QSizePolicy, QShortcut, QCheckBox, QMainWindow)
 from PyQt5.QtGui import QPixmap, QImage, QTransform, QPainter, QColor, QPen, QKeySequence
-from PyQt5.QtCore import Qt, QTimer, QPoint
+from PyQt5.QtCore import Qt, QTimer, QPoint, QRect
 import random
 import h5py
+import traceback
+import seaborn as sns
+import importlib.util
+
 
 class ZoomableVideoLabel(QLabel):
     def __init__(self, parent=None):
@@ -143,12 +149,10 @@ class BehaviorPanel(QWidget):
                                         }
                                     """
 
-        for behavior in behaviors:
-            r = random.randint(100, 255)
-            g = random.randint(100, 255)
-            b = random.randint(100, 255)
-            color = (r, g, b)
-            self.behavior_colors[behavior] = color
+        palette = sns.color_palette('hls', n_colors=len(behaviors))
+        for i, behavior in enumerate(behaviors):
+            rgb = palette[i]
+            self.behavior_colors[behavior] = tuple(int(c * 255) for c in rgb)
 
             row_layout = QHBoxLayout()
 
@@ -211,12 +215,18 @@ class TimelineCanvas(QWidget):
     def __init__(self, annotator, parent=None):
         super().__init__(parent)
         self.annotator = annotator
+
         self.setMinimumHeight(150)
         self.setMouseTracking(True)
+
         self.is_scrubbing = False
         self.last_scrub_pos = None
         self.scrub_fractional_frames = 0
         self.last_scrub_dir = 0
+
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.open_context_menu)
+
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -230,7 +240,6 @@ class TimelineCanvas(QWidget):
 
         width = self.width()
         height = self.height()
-
         row_height = height / max(len(behaviors), 1)
 
         center_frame = self.annotator.current_frame_idx
@@ -249,35 +258,43 @@ class TimelineCanvas(QWidget):
             x_pos = int((frame_num - left_edge) / frames_shown * width)
             painter.drawLine(x_pos, 0, x_pos, height)
 
-        ### Draw behavior bars
+        ### Draw behavior bars or inference confidences
         for idx, behavior in enumerate(behaviors):
             behavior_y_lo = idx * row_height
             behavior_y_hi = (idx + 1) * row_height
 
-            behavior_data = annotations.get(behavior, [])
+            color_rgb = self.annotator.behavior_panel.behavior_colors.get(behavior, (255, 255, 255))
 
-            for interval in behavior_data:
-                startF, endF, val = interval
-                if endF == 0 or endF < startF:
-                    endF = center_frame
+            if self.annotator.display_inference and self.annotator.current_inference and self.annotator.conf_array is not None:
+                conf_slice = self.annotator.conf_array[idx, left_edge:right_edge]
+                h, w = 1, len(conf_slice)
+                rgb = np.zeros((h, w, 3), dtype=np.uint8)
+                for ch in range(3):
+                    rgb[:, :, ch] = int(color_rgb[ch]) * conf_slice[None, :]
+                qimage = QImage(rgb.tobytes(), w, h, 3 * w, QImage.Format_RGB888)
+                pixmap = QPixmap.fromImage(qimage)
+                painter.drawPixmap(QRect(0, int(behavior_y_lo), width, int(row_height)), pixmap)
 
-                if endF < left_edge or startF > right_edge:
-                    continue
+            else:
+                # Draw manual annotations as intervals
+                behavior_data = annotations.get(behavior, [])
+                for interval in behavior_data:
+                    startF, endF, val = interval
+                    if endF == 0 or endF < startF:
+                        endF = center_frame
 
-                # Clip interval inside visible region
-                startF = max(startF, left_edge)
-                endF = min(endF, right_edge)
+                    if endF < left_edge or startF > right_edge:
+                        continue
 
-                x_start = int((startF - left_edge) / frames_shown * width)
-                x_end = int((endF - left_edge) / frames_shown * width)
+                    # Clip interval inside visible region
+                    startF = max(startF, left_edge)
+                    endF = min(endF, right_edge)
 
-                # Color
-                color = self.annotator.behavior_panel.behavior_colors.get(behavior, (255,255,255))
-                if val == -1:
-                    color = (128, 128, 128)  # Gray for NOT behavior
+                    x_start = int((startF - left_edge) / frames_shown * width)
+                    x_end = int((endF - left_edge) / frames_shown * width)
 
-                qcolor = QColor(*color)
-                painter.fillRect(x_start, int(behavior_y_lo), x_end - x_start, int(row_height), qcolor)
+                    interval_color = color_rgb if val == 1 else (128, 128, 128)  # Gray if NOT behavior
+                    painter.fillRect(x_start, int(behavior_y_lo), x_end - x_start, int(row_height), QColor(*interval_color))
 
         ### Add behavior names to the canvas
         painter.setPen(Qt.white)
@@ -387,7 +404,72 @@ class TimelineCanvas(QWidget):
             self.setCursor(Qt.ArrowCursor)
             self.update()
 
-class VideoAnnotator(QWidget):
+    def open_context_menu(self, position):
+        x_click = position.x()
+        y_click = position.y()
+
+        # Get dimensions and frames displayed
+        video_info = self.annotator.project['videos'][self.annotator.current_video_idx]
+        total_frames = video_info['nFrames']
+        fps = self.annotator.fps
+        width = self.width()
+        height = self.height()
+        behaviors = self.annotator.project['behaviors']
+        row_height = height / len(behaviors)
+
+        center_frame = self.annotator.current_frame_idx
+        frames_around = int(fps * 10)
+        left_edge = max(0, center_frame - frames_around)
+        right_edge = min(total_frames, center_frame + frames_around)
+        frames_shown = right_edge - left_edge
+
+        clicked_frame = int(left_edge + (x_click / width) * frames_shown)
+        behavior_idx = int(y_click / row_height)
+
+        if behavior_idx < 0 or behavior_idx >= len(behaviors):
+            return  # Clicked outside behavior rows
+
+        clicked_behavior = behaviors[behavior_idx]
+
+        annotations = video_info.get('annotations', {}).get(clicked_behavior, [])
+
+        # Find if we clicked inside an annotation segment
+        clicked_interval = None
+        for interval in annotations:
+            startF, endF, val = interval
+            if endF == 0 or endF < startF:
+                endF = center_frame  # Open interval handling
+
+            if startF <= clicked_frame <= endF:
+                clicked_interval = interval
+                break
+
+        if clicked_interval is None:
+            return  # Not clicked on any annotation
+
+        # Context menu setup
+        context_menu = QMenu(self)
+
+        delete_action = QAction("🗑️ Delete Annotation", self)
+        context_menu.addAction(delete_action)
+
+        action = context_menu.exec_(self.mapToGlobal(position))
+
+        if action == delete_action:
+            self.delete_annotation(clicked_behavior, clicked_interval)
+
+    def delete_annotation(self, behavior, interval):
+        annotations = self.annotator.project['videos'][self.annotator.current_video_idx]['annotations']
+
+        if behavior in annotations and interval in annotations[behavior]:
+            annotations[behavior].remove(interval)
+            self.update()
+            print(f"🗑️ Deleted annotation: {behavior}, interval {interval}")
+        else:
+            QMessageBox.warning(self, "Deletion Error",
+                                "Failed to delete annotation. It may already have been removed.")
+
+class VideoAnnotator(QMainWindow):
     def __init__(self, project):
         super().__init__()
 
@@ -396,6 +478,12 @@ class VideoAnnotator(QWidget):
         self.current_frame_idx = 0
         self.annotation_mode = False  # True when annotating (after pressing 's')
         self.annotation_start_frame = None
+        self.project_path = project['project_path']
+        self.currentModelType = 'full'  # Default model type
+        self.availModels = ['full', 'lite']  # Available model types
+
+        self.display_inference = False
+        self.current_inference = None
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.next_frame)
@@ -433,7 +521,6 @@ class VideoAnnotator(QWidget):
                             border-style: inset;
                         }
                     """
-
 
         # Start with left side of the gui
         left_panel = QVBoxLayout()
@@ -476,6 +563,15 @@ class VideoAnnotator(QWidget):
         controls_layout.addWidget(video_select_label)
         controls_layout.addWidget(self.video_selector)
 
+        model_select_label = QLabel("Select Model:")
+        model_select_label.setStyleSheet("color: white; font-weight: bold;")
+        self.model_selector = QComboBox()
+        self.model_selector.addItems([model for model in self.availModels])
+        self.model_selector.currentIndexChanged.connect(self.set_model)
+
+        controls_layout.addWidget(model_select_label)
+        controls_layout.addWidget(self.model_selector)
+
         self.play_pause_button = QPushButton("Play")
         self.play_pause_button.clicked.connect(self.toggle_play)
         self.play_pause_button.setStyleSheet(button_style)
@@ -486,16 +582,6 @@ class VideoAnnotator(QWidget):
         self.save_button.setStyleSheet(button_style)
         controls_layout.addWidget(self.save_button)
 
-        self.add_behavior_button = QPushButton("Add Behavior")
-        self.add_behavior_button.clicked.connect(self.add_behavior)
-        self.add_behavior_button.setStyleSheet(button_style)
-        controls_layout.addWidget(self.add_behavior_button)
-
-        self.add_video_button = QPushButton("Add Video")
-        self.add_video_button.clicked.connect(self.add_video)
-        self.add_video_button.setStyleSheet(button_style)
-        controls_layout.addWidget(self.add_video_button)
-
         # Add train and infer buttons
         self.train_button = QPushButton("Train model")
         self.train_button.clicked.connect(self.train_TUBBAmodel)
@@ -503,19 +589,31 @@ class VideoAnnotator(QWidget):
                                         "border-radius: 4px; padding: 4px; font: bold 12px;} QPushButton:pressed {border-style: inset}")
         controls_layout.addWidget(self.train_button)
 
-        self.predict_button = QPushButton("Infer behaviors")
-        self.predict_button.clicked.connect(self.TUBBA_modelInference)
+        self.predict_button = QPushButton("Run Inference on Video")
+        self.predict_button.clicked.connect(self.run_model_inference)
         self.predict_button.setStyleSheet(
             "QPushButton {background-color: #157FFF; color: black; border: 1px solid gray; border-style: outset;"
             "border-radius: 4px; padding: 4px; font: bold 12px;} QPushButton:pressed {border-style: inset}")
         controls_layout.addWidget(self.predict_button)
 
+        self.batch_predict_button = QPushButton("Run Inference on Project")
+        self.batch_predict_button.clicked.connect(self.batch_run_model_inference)
+        self.batch_predict_button.setStyleSheet(
+            "QPushButton {background-color: #9BFF1A; color: black; border: 1px solid gray; border-style: outset;"
+            "border-radius: 4px; padding: 4px; font: bold 12px;} QPushButton:pressed {border-style: inset}")
+        controls_layout.addWidget(self.batch_predict_button)
+
+        # Inference display toggle
+        self.inference_toggle = QCheckBox("Show Inferred Behaviors")
+        self.inference_toggle.setChecked(self.display_inference)
+        self.inference_toggle.setStyleSheet("color: white; font-weight: bold;")
+        self.inference_toggle.stateChanged.connect(self.handle_inference_toggle)
+        controls_layout.addWidget(self.inference_toggle)
+
         controls_layout.addStretch()
         video_controls_group.setLayout(controls_layout)
         video_controls_group.setMaximumWidth(250)
         left_panel.addWidget(video_controls_group)
-
-        left_panel.addStretch()
 
         # Now move to the right side of the gui, which will contain the video and timeline
         right_panel = QVBoxLayout()
@@ -541,7 +639,6 @@ class VideoAnnotator(QWidget):
                         }
                         QSlider::handle:horizontal:hover {
                             background: #000;
-                            border_color: #000;
                         }
                         QSlider::add-page:horizontal {
                             background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1, stop: 0 #B1B1B1, stop: 1 #c4c4c4);
@@ -575,7 +672,50 @@ class VideoAnnotator(QWidget):
         main_layout.addLayout(left_panel, 1)
         main_layout.addLayout(right_panel, 4)
 
-        self.setLayout(main_layout)
+        central_widget = QWidget()
+        central_widget.setLayout(main_layout)
+        self.setCentralWidget(central_widget)
+
+        # --- Add menubar section here ---
+        menubar = self.menuBar()
+        file_menu = menubar.addMenu('File')
+
+        # Create actions and connect them
+        save_as_act = QAction('Save Project As...', self)
+        add_behavior_act = QAction('Add Behavior...', self)
+        remove_behavior_act = QAction('Remove Behavior...', self)
+        add_video_act = QAction('Add Video...', self)
+        remove_video_act = QAction('Remove Video...', self)
+        import_ann_act = QAction('Import Video Annotations', self)
+        export_ann_act = QAction('Export Video Annotations to CSV', self)
+        export_ann_batch_act = QAction('Export ALL Video Annotations', self)
+        shortcutHelp_act = QAction('Shortcuts...', self)
+
+        save_as_act.triggered.connect(self.save_project_as)
+        add_behavior_act.triggered.connect(self.add_behavior)
+        remove_behavior_act.triggered.connect(self.remove_behavior)
+        add_video_act.triggered.connect(self.add_video)
+        remove_video_act.triggered.connect(self.remove_video)
+        import_ann_act.triggered.connect(self.import_annotations)
+        export_ann_act.triggered.connect(self.export_annotations)
+        export_ann_batch_act.triggered.connect(self.batch_export_annotations)
+        shortcutHelp_act.triggered.connect(self.show_shortcuts)
+
+        file_menu.addAction(save_as_act)
+        file_menu.addSeparator()
+        file_menu.addAction(add_behavior_act)
+        file_menu.addAction(remove_behavior_act)
+        file_menu.addSeparator()
+        file_menu.addAction(add_video_act)
+        file_menu.addAction(remove_video_act)
+        file_menu.addSeparator()
+        file_menu.addAction(import_ann_act)
+        file_menu.addAction(export_ann_act)
+        file_menu.addAction(export_ann_batch_act)
+        file_menu.addSeparator()
+        file_menu.addAction(shortcutHelp_act)
+
+        print('Hey brother, you are using TUBBA! [scottish accent]')
 
         self.load_video(self.project['videos'][self.current_video_idx]['folder'])
 
@@ -593,10 +733,36 @@ class VideoAnnotator(QWidget):
         self.slider.setMaximum(self.total_frames - 1)
 
         self.show_frame(0)
+        self.current_frame_idx = 0
 
     def switch_video(self, idx):
+
         self.current_video_idx = idx
         self.load_video(self.project['videos'][idx]['folder'])
+
+        # Try to load inference from file if path exists
+        video = self.project['videos'][idx]
+        if 'inferred_path' in video:
+            import pickle
+            try:
+                abs_path = os.path.join(os.path.dirname(self.project_path), video['inferred_path'])
+                with open(abs_path, 'rb') as f:
+                    self.current_inference = pickle.load(f)
+                self.display_inference = True
+                print(f"🧠 Loaded inference for {video['name']}")
+                self.update_confidence_pixmap()
+            except Exception as e:
+                print(f"⚠️ Failed to load inference for {video['name']}: {e}")
+                self.current_inference = None
+                self.display_inference = False
+        else:
+            self.current_inference = None
+            self.display_inference = False
+
+        self.inference_toggle.setChecked(self.display_inference)
+
+    def set_model(self, idx):
+        self.currentModelType = self.availModels[idx]
 
     def show_frame(self, idx):
         if not self.cap.isOpened():
@@ -753,6 +919,20 @@ class VideoAnnotator(QWidget):
         else:
             super().keyPressEvent(event)
 
+    def show_shortcuts(self):
+        shortcuts = (
+            "<b>Available Keybind Shortcuts:</b><br><br>"
+            "<b>S</b>: Start annotation<br>"
+            "<b>E</b>: End annotation<br>"
+            "<b>Space</b>: Play/Pause video<br>"
+            "<b>Left Arrow</b>: Previous frame<br>"
+            "<b>Right Arrow</b>: Next frame<br>"
+            "<b>Cmd + S</b>: Save project<br>"
+            "<b>Cmd + Z</b>: Undo last annotation"
+        )
+
+        QMessageBox.information(self, "Keyboard Shortcuts", shortcuts)
+
     def save_project(self):
         import json
         from PyQt5.QtWidgets import QFileDialog
@@ -839,15 +1019,30 @@ class VideoAnnotator(QWidget):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder for New Video")
         if not folder:
             print("⚠️ No folder selected.")
-            return
+            return None
 
         print(f"📂 Selected folder: {folder}")
 
         # Try to preprocess it
         try:
-            from getTUBBAFeats import dlcToFeatures
+            # Check feature extraction algorithm used in project creation
+            selected_script = self.project['featureExtractionAlgorithm']
+            if not selected_script:
+                return None
 
-            vidInfo = dlcToFeatures(folder, spatialSR=0.5)  # Assume no downsampling for new
+            # Build the full path to the script
+            script_dir = os.path.join(os.path.dirname(__file__), 'featureExtractions')
+            script_path = os.path.join(script_dir, selected_script)
+
+            # Import the module dynamically
+            spec = importlib.util.spec_from_file_location("feature_module", script_path)
+            feature_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(feature_module)
+
+            # assume same sampling rate as previous videos
+            spatialSR = self.project['videos'][self.current_video_idx]['samplingRate']
+            print("Starting preprocessing...")
+            vidInfo = feature_module.tracksToFeatures(folder, spatialSR)  # Assume no downsampling for new
             print("✅ Preprocessing successful.")
 
             # Determine the video name
@@ -873,17 +1068,173 @@ class VideoAnnotator(QWidget):
             self.video_selector.addItem(video_entry['name'])
             new_index = self.video_selector.count() - 1
             self.video_selector.setCurrentIndex(new_index)
+
         except Exception as e:
-            print(f"❌ Error adding video: {e}")
+            tb = traceback.extract_tb(e.__traceback__)
+            filename, line, func, text = tb[-1]  # Get last traceback entry (where the error happened)
+            print(f"❌ Error in function '{func}', line {line}: {e}")
+            traceback.print_exc()
+
+    def import_annotations(self):
+
+        video = self.project['videos'][self.current_video_idx]
+        video_dir = os.path.splitext(video['folder'])[0]
+
+        # Open file dialog for CSV selection
+        csv_file, _ = QFileDialog.getOpenFileName(
+            self, "Select Annotation CSV", video_dir, "CSV Files (*.csv)")
+
+        if not csv_file:
+            print("No file selected.")
+            return
+
+        # Load annotations from CSV
+        annotations_df = pd.read_csv(csv_file)
+
+        if len(annotations_df) != video['nFrames']:
+            print(f"Mismatch in number of frames! CSV has {len(annotations_df)} rows; video has {video['nFrames']} frames.")
+            return
+
+        existing_behaviors = set(self.project['behaviors'])
+        csv_behaviors = annotations_df.columns
+
+        # Add new behaviors if they don't exist
+        for behavior in csv_behaviors:
+            newName = behavior.strip().capitalize()
+            if newName not in existing_behaviors:
+                self.project['behaviors'].append(newName)
+                print(f"Added new behavior found in annotations: {newName}")
+
+            behavior_col = annotations_df[behavior].fillna(0).astype(int)
+
+            annotations = []
+            current_val = 0
+            start_frame = 0
+
+            for frame_idx, val in enumerate(behavior_col):
+                if val != current_val:
+                    if current_val != 0:
+                        annotations.append([start_frame, frame_idx - 1, current_val])
+                    start_frame = frame_idx
+                    current_val = val
+
+            # Handle behavior continuing to the last frame
+            if current_val != 0:
+                annotations.append([start_frame, len(behavior_col) - 1, current_val])
+
+            # Store annotations
+            video['annotations'][newName] = annotations
+
+        # Remove and replace old panel
+        self.behavior_layout.removeWidget(self.behavior_panel)
+        self.behavior_panel.deleteLater()
+        self.behavior_panel = BehaviorPanel(self.project['behaviors'])
+        self.behavior_layout.insertWidget(0, self.behavior_panel)
+
+        print("Annotations successfully imported.")
+
+    def export_annotations(self):
+
+        video = self.project['videos'][self.current_video_idx]
+        video_name = os.path.splitext(video['name'])[0]
+        output_path = os.path.join(video['folder'], f"{video_name}_annotations.csv")
+
+        nFrames = video['nFrames']
+        behaviors = self.project['behaviors']
+
+        # Initialize [nFrames x nBehaviors] matrix with zeros
+        frame_annotations = np.zeros((nFrames, len(behaviors)), dtype=int)
+
+        for b_idx, behavior in enumerate(behaviors):
+            spans = video['annotations'].get(behavior, [])
+            for start, end, value in spans:
+                frame_annotations[start:end + 1, b_idx] = value
+
+        with open(output_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['frame'] + behaviors)
+            for i in range(nFrames):
+                writer.writerow([i] + list(frame_annotations[i]))
+
+        print(f"✅ Per-frame annotations exported to {output_path}")
+
+    def remove_video(self):
+        video = self.project['videos'][self.current_video_idx]
+        reply = QMessageBox.question(
+            self, 'Remove Video',
+            f"Are you sure you want to remove '{video['name']}' from the project? All annotations will be lost.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+        if reply == QMessageBox.Yes:
+            self.project['videos'].pop(self.current_video_idx)
+            self.current_video_idx = max(0, self.current_video_idx - 1)
+            self.load_video(self.project['videos'][self.current_video_idx]['folder'])
+            self.video_selector.removeItem(self.current_video_idx)
+            print("Video successfully removed from the project.")
+
+    def remove_behavior(self):
+        behaviors = self.project['behaviors']
+
+        behavior, ok = QInputDialog.getItem(
+            self, 'Remove Behavior',
+            'Select behavior to remove:', behaviors, 0, False)
+
+        if ok and behavior:
+            reply = QMessageBox.question(
+                self, 'Confirm Remove Behavior',
+                f"Are you sure you want to remove behavior '{behavior}'? All associated annotations will be lost.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+            if reply == QMessageBox.Yes:
+                self.project['behaviors'].remove(behavior)
+                for video in self.project['videos']:
+                    if behavior in video['annotations']:
+                        video['annotations'].pop(behavior)
+
+                # Refresh behavior panel
+                self.behavior_layout.removeWidget(self.behavior_panel)
+                self.behavior_panel.deleteLater()
+                self.behavior_panel = BehaviorPanel(self.project['behaviors'])
+                self.behavior_layout.insertWidget(0, self.behavior_panel)
+
+                print(f"Behavior '{behavior}' successfully removed.")
+
+    def batch_export_annotations(self):
+
+        behaviors = self.project['behaviors']
+
+        for video in self.project['videos']:
+            video_name = os.path.splitext(video['name'])[0]
+            output_path = os.path.join(video['folder'], f"{video_name}_annotations.csv")
+            nFrames = video['nFrames']
+
+            frame_annotations = np.zeros((nFrames, len(behaviors)), dtype=int)
+
+            for b_idx, behavior in enumerate(behaviors):
+                spans = video['annotations'].get(behavior, [])
+                for start, end, value in spans:
+                    frame_annotations[start:end + 1, b_idx] = value
+
+            with open(output_path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['frame'] + behaviors)
+                for i in range(nFrames):
+                    writer.writerow([i] + list(frame_annotations[i]))
+
+            print(f"📁 Exported: {output_path}")
 
     def train_TUBBAmodel(self):
-        from TUBBA_train import train_TUBBAmodel
+        import TUBBA_train
 
         # Save first to ensure that all annotations are included
         print(f"Training model...")
         self.save_project()
 
-        model_path = train_TUBBAmodel(self.project_path)
+        if self.currentModelType == 'full':
+            model_path = TUBBA_train.train_TUBBAmodel(self.project_path)
+        else:
+            model_path = TUBBA_train.train_TUBBAmodel_lite(self.project_path)
+
         self.project['models'] = model_path
 
         # Save to retain model path
@@ -891,16 +1242,89 @@ class VideoAnnotator(QWidget):
 
         return None
 
-    def TUBBA_modelInference(self):
-        from TUBBAutils import save_inference_to_disk
-        from TUBBA_infer import TUBBA_modelInference
+    def run_model_inference(self):
+        from TUBBA_utils import save_inference_to_disk
+        import TUBBA_infer
 
         print(f"Inferring behaviors...")
         self.save_project()
 
         video = self.project['videos'][self.current_video_idx]
-        results = TUBBA_modelInference(self.project_path, video['name'], video['folder'])
+        if self.currentModelType == 'full':
+            results = TUBBA_infer.TUBBA_modelInference(self.project_path, video['name'], video['folder'])
+        else:
+            results = TUBBA_infer.TUBBA_modelInference_lite(self.project_path, video['name'], video['folder'])
 
-        # Here, we should save the current state of the project, and then pass the directory to the training script
+        # save for now
+        inferred_path = save_inference_to_disk(video, results)
+        self.project['videos'][self.current_video_idx]['inferred_path'] = os.path.relpath(inferred_path)
+
+        # allow viewing of current results
+        self.display_inference = True
+        self.current_inference = results
+        self.update_confidence_pixmap()
+        self.inference_toggle.setChecked(self.display_inference)
+        self.timeline.update()
+
         return None
 
+    def batch_run_model_inference(self):
+        from TUBBA_utils import save_inference_to_disk
+        import TUBBA_infer
+
+        print(f"Starting batch inference...")
+        self.save_project()
+
+        for video in self.project['videos']:
+            print(f"Inferring behaviors on video {video['name']}...")
+            if self.currentModelType == 'full':
+                results = TUBBA_infer.TUBBA_modelInference(self.project_path, video['name'], video['folder'])
+            else:
+                results = TUBBA_infer.TUBBA_modelInference_lite(self.project_path, video['name'], video['folder'])
+
+            # save for now
+            inferred_path = save_inference_to_disk(video, results)
+            video['inferred_path'] = os.path.relpath(inferred_path)
+
+        self.save_project()
+
+        # allow viewing of current video
+        self.display_inference = True
+        self.current_inference = results
+        self.update_confidence_pixmap()
+        self.inference_toggle.setChecked(self.display_inference)
+        self.timeline.update()
+
+        return None
+
+    def handle_inference_toggle(self, state):
+        checked = (state == 2)  # Qt.Checked
+
+        video = self.project['videos'][self.current_video_idx]
+
+        if checked:
+            if 'inferred_path' not in video:
+                QMessageBox.warning(
+                    self,
+                    "No Inference Available",
+                    "You need to run inference on this video before toggling it on."
+                )
+                self.inference_toggle.setChecked(False)
+                return
+
+        self.display_inference = checked
+        self.timeline.update()
+
+    def update_confidence_pixmap(self):
+        if not self.current_inference:
+            self.confidence_pixmap = None
+            return
+
+        behaviors = self.project['behaviors']
+        confidences = [self.current_inference['confidence'].get(b, []) for b in behaviors]
+
+        if not confidences or len(confidences[0]) == 0:
+            self.confidence_pixmap = None
+            return
+
+        self.conf_array = np.array(confidences)  # shape: [behaviors x frames]
