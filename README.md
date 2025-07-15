@@ -9,7 +9,7 @@ TUBBA can use sparse behavioral labels to generate frame-by-frame likelihood est
 It does not force these behaviors to be fully orthogonal. At its core, TUBBA couples the XGBoost algorithm with a
 relatively light-weight LSTM neural network to generate smooth predictions. TUBBA is designed to be flexible, easy to use,
 and extensible for diverse behavioral neuroscience projects. TUBBA achieves state-of-the-art performance across 
-multiple behaviors across multiple species, with frame-by-frame error rates below $10^{-3}$ for most behaviors
+multiple behaviors across multiple species!
 
 Importantly, TUBBA works best when the user carefully design their own behavioral features to be used for 
 classification as it allows the user to leverage unique high-order features in their data, such as relationships to 
