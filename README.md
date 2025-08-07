@@ -24,6 +24,8 @@ TUBBA is heavily inspired by the classic JAABA software, originally developed by
 (Kabra, M., Robie, A., Rivera-Alba, M. et al. Nat Methods 10, 64–67 (2013). https://doi.org/10.1038/nmeth.2281), and largely 
 developed with the goal of having a smooth, python-based alternative. 
 
+https://github.com/user-attachments/assets/05a4235e-3212-4232-ada5-76ed9b93d714
+
 ---
 
 ## Installing TUBBA
