@@ -18,7 +18,7 @@ track the features characteristic of each behavioral pattern. TUBBA thus does no
 but it does require the user to think carefully about the features they want to use for classification.
 
 TUBBA is currently in active development, and is not yet ready for public release. TUBBA is not yet able to
-handle annotations from multiple interacting individual animals.
+handle annotations from multiple interacting individual animals - if you have multiple animals in your videos, run TUBBA independently for each animal. 
 
 TUBBA is heavily inspired by the classic JAABA software, originally developed by Kristen Branson's laboratory at Janelia farm
 (Kabra, M., Robie, A., Rivera-Alba, M. et al. Nat Methods 10, 64–67 (2013). https://doi.org/10.1038/nmeth.2281), and largely 
