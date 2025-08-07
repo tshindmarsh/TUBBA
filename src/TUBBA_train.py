@@ -161,7 +161,7 @@ class SmoothingLSTM(nn.Module):
             return self.fc(center).squeeze(-1)
 
 
-def train_TUBBAmodel(project_json_path, window_size=26, lstm_epochs=1000):
+def train_TUBBAmodel(project_json_path, window_size=26, lstm_epochs=2500):
     with open(project_json_path, 'r') as f:
         project = json.load(f)
 
@@ -297,7 +297,7 @@ def train_TUBBAmodel(project_json_path, window_size=26, lstm_epochs=1000):
         xgb_model = xgb.XGBClassifier(
             objective='binary:logistic',
             eval_metric='logloss',
-            n_estimators=1000,
+            n_estimators=2000,
             max_depth=6,
             min_child_weight=5,
             gamma=0.8,

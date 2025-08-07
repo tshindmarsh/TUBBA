@@ -14,7 +14,7 @@ def save_inference_to_disk(video, inference_dict):
     out_dir = os.path.join(video['folder'], 'inference')
     os.makedirs(out_dir, exist_ok=True)
 
-    out_path = os.path.join(out_dir, f"{video_name}_inferred.pkl")
+    out_path = os.path.join(out_dir, f"{video_name}_inferred_v2.pkl")
     with open(out_path, 'wb') as f:
         pickle.dump(inference_dict, f)
 
@@ -144,6 +144,64 @@ def circ_var(angles):
     cos_mean = np.mean(np.cos(angles))
     R = np.sqrt(sin_mean ** 2 + cos_mean ** 2)
     return 1 - R
+
+def ensure_normalized_features(project):
+    """Ensure all videos in project have normalized features cached."""
+    all_feats_normed = True
+    for video in project['videos']:
+        if not os.path.exists(os.path.join(video['folder'], 'normed_features.npy')):
+            all_feats_normed = False
+            break
+
+    if all_feats_normed:
+        print("✅ Found normalized features for all videos")
+        return
+
+    print("🔍 Computing normalization stats across all animals...")
+    temp_features = []
+    for video in project['videos']:
+        feature_path = os.path.join(video['folder'], video['featureFile'])
+        if not os.path.isfile(feature_path):
+            continue
+        try:
+            df = pd.read_hdf(feature_path, key='perframes')
+            temp_features.append(df)
+        except:
+            continue
+
+    if not temp_features:
+        raise ValueError("No valid feature files found in project")
+
+    full_df = pd.concat(temp_features, axis=0, ignore_index=True)
+    feature_names = full_df.columns.tolist()
+
+    # Compute normalization stats
+    zscore_stats, minmax_stats = {}, {}
+    for col in feature_names:
+        col_data = full_df[col].values
+        if variable_is_circular(col_data):
+            continue
+        elif 'pca' in col.lower():
+            col_min = np.nanmin(col_data)
+            col_max = np.nanmax(col_data)
+            minmax_stats[col] = (col_min, col_max)
+        else:
+            col_mean = np.nanmean(col_data)
+            col_std = np.nanstd(col_data)
+            zscore_stats[col] = (col_mean, col_std)
+
+    imputer = SimpleImputer(strategy='constant', fill_value=0)
+
+    # Apply normalization to each video
+    for video in project['videos']:
+        cache_path = os.path.join(video['folder'], 'normed_features.npy')
+        if not os.path.exists(cache_path):
+            feature_path = os.path.join(video['folder'], video['featureFile'])
+            df = pd.read_hdf(feature_path, key='perframes')
+            X = normalize_features(df, zscore_stats, minmax_stats)
+            X = imputer.fit_transform(X)
+            np.save(cache_path, X)
+            print(f"✅ Normalized features for {video['name']}")
 
 def wrapTo2Pi(angles):
     return np.mod(angles, 2 * np.pi)
