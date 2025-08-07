@@ -287,7 +287,7 @@ def processDLCcsvTUBBA(data, Fs):
 
 def getMouseCricketPredictors(M, C, Fs, shelterLoc=None):
     from scipy.signal import savgol_coeffs, convolve
-    from src.TUBBA_utils import (approximateCurvature2D, moving_circular_correlation, circ_var,
+    from TUBBA_utils import (approximateCurvature2D, moving_circular_correlation, circ_var,
                              circ_dist, wrapTo2Pi, unwrapAngles_with_nans, convert_store_to_table)
 
     store = {}
