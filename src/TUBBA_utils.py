@@ -14,7 +14,7 @@ def save_inference_to_disk(video, inference_dict):
     out_dir = os.path.join(video['folder'], 'inference')
     os.makedirs(out_dir, exist_ok=True)
 
-    out_path = os.path.join(out_dir, f"{video_name}_inferred.pkl")
+    out_path = os.path.join(out_dir, f"{video_name}_inferred_v2.pkl")
     with open(out_path, 'wb') as f:
         pickle.dump(inference_dict, f)
 
