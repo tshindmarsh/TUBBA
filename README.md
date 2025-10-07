@@ -299,7 +299,7 @@ All good! Sometimes we just want to plug and play. There are three potential wor
 2. Got keypoint tracks? Great. We provide a default `TUBBA_getFeats` script that will search your video folder for a tracking data (in csv format), and create hundreds to thousands of features from these alone that can be used to train a model. This has the added benefit of being largely environment-agnostic. These features relate to the organization of the keypoints in space, and their angular and euclidian relationships to one another. `TUBBA_getFeats` will try to filter out large jumps in raw tracking data, if they exist, and interpolate across short bouts of missing frames
 3. You can pre-define features, and let TUBBA do the linking, by runnign `TUBBA_importFeats`. Just place the features you care about (perhaps the speed of your animal, distance to keypoints, joint angles etc.) into a frame-by-frame csv file (`[n_frames × n_features]`) inside the corresponding video folder. You should have a header-row providing a useful descriptor name for each column. TUBBA will ask you if you'd like it to perform a "feature expansion", in which it computes the first few derivatives of the core features and smooths them with both long and short windows to provide both instantaneous values and global context.
 
-⚠️ **WARNING** ⚠️ TUBBA models are only as good as the features they receive. I urge you to think carefully about which features should be left out of your model to make your predictions accurate, unbiased, and generalizable. 
+⚠️ TUBBA models are only as good as the features they receive. I urge you to think carefully about which features should be left out of your model to make your predictions accurate, unbiased, and generalizable. 
 
 ---
 
