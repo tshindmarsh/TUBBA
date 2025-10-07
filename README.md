@@ -326,14 +326,6 @@ conda install -c conda-forge pyqt matplotlib seaborn scikit-learn h5py joblib op
 Major packages:
 - `PyQt5`, `xgboost`, `torch`, `opencv-python`, `pandas`, `scikit-learn`, `matplotlib`, `joblib`, `h5py`, `numpy`
 
----
-
-## 🧹 TODOs
-
-- [ ] Enable user to load annotations from csv (frame-stamped)
-- [ ] Enable user to export annotations from full gui
-- [ ] Enable loading of externally defined perframe features. 
-- [ ] Enable dynamic toggling between model architectures 
 
 ---
 
