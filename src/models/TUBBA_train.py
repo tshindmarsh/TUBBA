@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import joblib
 import numpy as np
@@ -8,8 +9,11 @@ import torch.nn as nn
 import xgboost as xgb
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
-from TUBBA_utils import variable_is_circular, normalize_features
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+# Add parent directory to path to import TUBBA_utils
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from TUBBA_utils import variable_is_circular, normalize_features
 
 
 def augment_labeled_frames(X_frames, y_frames, noise_factor=0.05, copies=3,name=None):

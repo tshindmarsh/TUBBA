@@ -1,4 +1,5 @@
 import os
+import sys
 import glob
 
 import cv2
@@ -8,8 +9,11 @@ from scipy.ndimage import label
 from sklearn.decomposition import PCA
 from itertools import combinations
 from sklearn.impute import SimpleImputer
-from TUBBA_utils import detect_circle_region
 import matplotlib.pyplot as plt
+
+# Add parent directory to path to import TUBBA_utils
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from TUBBA_utils import detect_circle_region, find_dlc_header_rows
 import warnings
 import random
 
@@ -42,6 +46,7 @@ def tracksToFeatures(parent, spatialSR):
         vidInfo['frameRate'] = None
         print(f"Warning: Multiple or no videos detected in {parent}... Skipping")
         return vidInfo, None
+
     else:
         # Load video
         vidInfo['name'] = os.path.basename(mp4_files[0])
@@ -53,49 +58,65 @@ def tracksToFeatures(parent, spatialSR):
 
         frame_count = int(vc.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        # Choose 10 random frame indices (ensure they're within bounds)
-        random_indices = sorted(random.sample(range(frame_count), k=25))
+    # Give an out here in case the feature file already exists
+    feature_file = os.path.join(parent, 'perframe_feats.h5')
+    if os.path.exists(feature_file):
+        print(f"📂 Found existing feature file at {feature_file}. Skipping feature extraction.")
 
-        frames = []
-        for idx in random_indices:
-            vc.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret, frame = vc.read()
-            if ret:
-                frames.append(frame.astype(np.float32))
-            else:
-                print(f"⚠️ Could not read frame at index {idx}")
-        vc.release()
+        import h5py
+        with h5py.File(feature_file, 'r') as f:
+            # You don't actually need to load anything, just confirm it exists
 
-        # Ensure we got enough frames
-        if len(frames) == 0:
-            raise ValueError("No valid frames were read from the video.")
+            # Create vidInfo based on folder info
+            vidInfo['nframes'] = len(frame_count)
+            vidInfo['featureFile'] = 'perframe_feats.h5'
+            vidInfo['status'] = 1
 
-        # Average the frames
-        avg_frame = np.mean(frames, axis=0).astype(np.uint8)
+        return vidInfo
 
-        # Detect circle in the averaged frame
-        circle = detect_circle_region(avg_frame)
-        if circle is not None:
-            cx, cy, radius = circle
-            shelter = np.array([[cx], [cy]], dtype=np.float64)
-            shelter *= (1 / spatialSR)
+    # Choose 10 random frame indices (ensure they're within bounds)
+    random_indices = sorted(random.sample(range(frame_count), k=25))
 
-            print(f"Circle center: ({cx}, {cy}), radius: {radius}")
-
-            # Plot and save
-            fig, ax = plt.subplots()
-            ax.imshow(avg_frame)
-            ax.set_title("Detected Circle (Avg Frame)")
-            ax.axis("off")
-
-            circle_patch = plt.Circle((cx, cy), radius, color='lime', fill=False, linewidth=2)
-            ax.add_patch(circle_patch)
-
-            save_path = os.path.join(vidInfo['dir'], 'detected_Shelter.png')
-            plt.savefig(save_path, bbox_inches='tight', dpi=150)
-            plt.close(fig)
+    frames = []
+    for idx in random_indices:
+        vc.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = vc.read()
+        if ret:
+            frames.append(frame.astype(np.float32))
         else:
-            shelter = np.ones((2, 1)) * -99
+            print(f"⚠️ Could not read frame at index {idx}")
+    vc.release()
+
+    # Ensure we got enough frames
+    if len(frames) == 0:
+        raise ValueError("No valid frames were read from the video.")
+
+    # Average the frames
+    avg_frame = np.mean(frames, axis=0).astype(np.uint8)
+
+    # Detect circle in the averaged frame
+    circle = detect_circle_region(avg_frame)
+    if circle is not None:
+        cx, cy, radius = circle
+        shelter = np.array([[cx], [cy]], dtype=np.float64)
+        shelter *= (1 / spatialSR)
+
+        print(f"Circle center: ({cx}, {cy}), radius: {radius}")
+
+        # Plot and save
+        fig, ax = plt.subplots()
+        ax.imshow(avg_frame)
+        ax.set_title("Detected Circle (Avg Frame)")
+        ax.axis("off")
+
+        circle_patch = plt.Circle((cx, cy), radius, color='lime', fill=False, linewidth=2)
+        ax.add_patch(circle_patch)
+
+        save_path = os.path.join(vidInfo['dir'], 'detected_Shelter.png')
+        plt.savefig(save_path, bbox_inches='tight', dpi=150)
+        plt.close(fig)
+    else:
+        shelter = np.ones((2, 1)) * -99
 
     # Find CSV files
     csv_files = [os.path.basename(f) for f in glob.glob(os.path.join(parent, '*.csv'))]
@@ -133,22 +154,6 @@ def tracksToFeatures(parent, spatialSR):
 
     Fs = vidInfo['frameRate']
     ts = [i / Fs for i in range(1, len(mouseData) + 1)]
-
-    # Give an out here in case the feature file already exists
-    feature_file = os.path.join(parent, 'perframe_feats.h5')
-    if os.path.exists(feature_file):
-        print(f"📂 Found existing feature file at {feature_file}. Skipping feature extraction.")
-
-        import h5py
-        with h5py.File(feature_file, 'r') as f:
-            # You don't actually need to load anything, just confirm it exists
-
-            # Create vidInfo based on folder info
-            vidInfo['nframes'] = len(mouseData_raw)
-            vidInfo['featureFile'] = 'perframe_feats.h5'
-            vidInfo['status'] = 1
-
-        return vidInfo
 
     # Upscale if downsampling
     if spatialSR < 1:
@@ -195,9 +200,9 @@ def tracksToFeatures(parent, spatialSR):
         perframes.to_hdf(feature_path, key='perframes', mode='w', format='table', complevel=5)
         print(f"⚠️Warning: High error rates in {parent}. Consider retraining DLC.")
 
-    else:  # errorRate >= 0.2
-        vidInfo['status'] = 0
-        raise ValueError(f"Too few tracked points detected in {parent}! Skipping.")
+    # else:  # errorRate >= 0.2
+    #     vidInfo['status'] = 0
+    #     raise ValueError(f"Too few tracked points detected in {parent}! Skipping.")
 
     return vidInfo
 

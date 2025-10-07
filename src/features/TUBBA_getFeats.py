@@ -1,4 +1,5 @@
 import os
+import sys
 import glob
 
 import cv2
@@ -9,8 +10,12 @@ from sklearn.decomposition import PCA
 from itertools import combinations
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
-from TUBBA_utils import detect_circle_region, detect_header_rows, convert_store_to_table, circ_var, unwrapAngles_with_nans, wrapTo2Pi, compute_floppiness
 from scipy.spatial.distance import pdist, squareform
+
+# Add parent directory to path to import TUBBA_utils
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from TUBBA_utils import (detect_circle_region, convert_store_to_table,
+                         circ_var, unwrapAngles_with_nans, wrapTo2Pi, compute_floppiness, find_dlc_header_rows)
 import matplotlib.pyplot as plt
 import warnings
 import random
@@ -84,27 +89,26 @@ def tracksToFeatures(parent, spatialSR):
     # Load tracking
     trackingData = None
     dlc_path = os.path.join(parent, dlc_file)
-    nHeaderRows = detect_header_rows(dlc_path)
 
-    print(f"Detected {nHeaderRows} header rows")
+    # Find the header rows with the coordinate pattern
+    header_indices, rows_to_skip = find_dlc_header_rows(dlc_path)
 
-    if nHeaderRows == 0:
-        # No headers detected, read normally
-        trackingData_raw = pd.read_csv(dlc_path)
-    elif nHeaderRows == 1:
-        # Single header row
-        trackingData_raw = pd.read_csv(dlc_path, header=0)
+    if header_indices:
+        # Read the CSV, using the header indices and skipping the extra header rows
+        trackingData_raw = pd.read_csv(dlc_path, header=header_indices,
+                                       skiprows=rows_to_skip if rows_to_skip else None,
+                                       low_memory=False)
+        # Concatenate multi-level columns
+        if isinstance(trackingData_raw.columns, pd.MultiIndex):
+            trackingData_raw.columns = ['_'.join(map(str, col)).strip('_') for col in trackingData_raw.columns]
+        trackingData = trackingData_raw.copy()
+        print(f"Found headers at rows: {header_indices}")
+        if rows_to_skip:
+            print(f"Skipped extra header rows: {rows_to_skip}")
+        print(f"Columns: {list(trackingData.columns[:30])}...")  # Show first few columns
     else:
-        # Multiple header rows - use list of row indices
-        header_indices = list(range(nHeaderRows))[1:]  # Skip the first row
-        trackingData_raw = pd.read_csv(dlc_path, header=header_indices)
-
-    if trackingData_raw.map(lambda x: isinstance(x, str)).any().any():
-        print("Warning: String values detected in tracking data. Likely multi-individual dataset. Skipping...")
+        print("Could not find coordinate pattern - ensure rows for body parts and x, y, likelihood exist.")
         return vidInfo, None
-
-    trackingData_raw.columns = [f"{bp}_{detail}" for bp, detail in trackingData_raw.columns]
-    trackingData = trackingData_raw.copy()
 
     if trackingData is None:
         print(f"Error: No tracking data found, cannot continue.")
@@ -141,6 +145,7 @@ def tracksToFeatures(parent, spatialSR):
         return vidInfo
 
     # Extract predictors
+    print('Extracting features... (this may take a few minutes)')
     perframes = getPredictors(trax, Fs)
 
     # -- Error rate check
@@ -163,10 +168,6 @@ def tracksToFeatures(parent, spatialSR):
         vidInfo['status'] = 1
         perframes.to_hdf(feature_path, key='perframes', mode='w', format='table', complevel=5)
         print(f"⚠️Warning: High error rates in {parent}. Consider retraining DLC.")
-
-    else:  # errorRate >= 0.2
-        vidInfo['status'] = 0
-        raise ValueError(f"Too few tracked points detected in {parent}! Skipping.")
 
     return vidInfo
 
@@ -263,8 +264,10 @@ def processCsv2TUBBA(data, Fs):
 
     return anis
 
+
 def getPredictors(M, Fs):
     from scipy.signal import savgol_coeffs, convolve
+    from scipy.spatial import ConvexHull
 
     store = {}
 
@@ -309,7 +312,7 @@ def getPredictors(M, Fs):
 
     # Fill NaNs and standardize features
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(pairwise_df.fillna(0))  # Or use some imputed value if needed
+    X_scaled = scaler.fit_transform(pairwise_df.fillna(0))
 
     # Run PCA
     pca = PCA(n_components=10)
@@ -317,17 +320,80 @@ def getPredictors(M, Fs):
 
     # Add PCA components
     for i in range(pcs.shape[1]):
-        store[f'pairwiseDist_PC{i + 1}'] = pcs[:, i][:, None]  # Shape (nFrames, 1
+        store[f'pairwiseDist_PC{i + 1}'] = pcs[:, i][:, None]
 
+    # --- Spatial shape features ---
 
-    # --- internal joint angles ---
-    # --- Joint Angles and PCA (Local Triplets Only) ---
+    # Convex hull area
+    hull_areas = []
+    for i in range(coords.shape[0]):
+        frame_coords = coords[i]
+        valid_mask = ~np.isnan(frame_coords).any(axis=1)
+        valid_points = frame_coords[valid_mask]
+
+        if len(valid_points) >= 3:
+            try:
+                hull = ConvexHull(valid_points)
+                hull_areas.append(hull.volume)  # 2D "volume" is area
+            except:
+                hull_areas.append(np.nan)
+        else:
+            hull_areas.append(np.nan)
+
+    store['convexHullArea'] = np.array(hull_areas)[:, None]
+
+    # Bounding box aspect ratio
+    bbox_aspect_ratios = []
+    for i in range(coords.shape[0]):
+        frame_coords = coords[i]
+        valid_mask = ~np.isnan(frame_coords).any(axis=1)
+        valid_points = frame_coords[valid_mask]
+
+        if len(valid_points) >= 2:
+            x_range = np.ptp(valid_points[:, 0])  # peak-to-peak (max - min)
+            y_range = np.ptp(valid_points[:, 1])
+
+            if y_range > 0:
+                aspect_ratio = x_range / y_range
+            else:
+                aspect_ratio = np.nan
+            bbox_aspect_ratios.append(aspect_ratio)
+        else:
+            bbox_aspect_ratios.append(np.nan)
+
+    store['bboxAspectRatio'] = np.array(bbox_aspect_ratios)[:, None]
+
+    # Body compactness (std of all pairwise distances)
+    body_compactness = []
+    for i in range(coords.shape[0]):
+        frame_coords = coords[i]
+        valid_mask = ~np.isnan(frame_coords).any(axis=1)
+        valid_points = frame_coords[valid_mask]
+
+        if len(valid_points) >= 2:
+            dists = pdist(valid_points)
+            compactness = np.std(dists)
+            body_compactness.append(compactness)
+        else:
+            body_compactness.append(np.nan)
+
+    store['bodyCompactness'] = np.array(body_compactness)[:, None]
+
+    # Distance from center of mass to each body part
+    for idx, bpt in enumerate(bpts):
+        bpt_distances = np.sqrt(
+            (coords[:, idx, 0] - store['centerX'].values) ** 2 +
+            (coords[:, idx, 1] - store['centerY'].values) ** 2
+        )
+        store[f'{bpt}_distFromCenter'] = bpt_distances[:, None]
+
+    # --- Internal joint angles ---
 
     # Mean position of each bodypart
     mean_coords = np.nanmean(coords, axis=0)  # shape: (nBodyparts, 2)
 
     # Full pairwise distance matrix
-    distmat = squareform(pdist(mean_coords))  # shape: (nBodyparts, nBodyparts)
+    distmat = squareform(pdist(mean_coords))
 
     # Build triplets (A, B, C) with B as joint and A, C from nearest neighbors
     k = 4  # Number of nearest neighbors
@@ -394,7 +460,7 @@ def getPredictors(M, Fs):
             movdirBpt[bpt] = np.arctan2(dy, dx)
             movmagBpt[bpt] = np.sqrt(dx ** 2 + dy ** 2)
 
-    # Motion coherence (using mean resultant length) - Ignore tail
+    # Motion coherence (using mean resultant length)
     sumSin = (np.sin(movdirBpt) * movmagBpt).sum(axis=1)
     sumCos = (np.cos(movdirBpt) * movmagBpt).sum(axis=1)
     norm = movmagBpt.sum(axis=1)
@@ -424,11 +490,75 @@ def getPredictors(M, Fs):
     for i in range(mov_pcs.shape[1]):
         store[f'pcaMovMag_{i + 1}'] = mov_pcs[:, i][:, None]
 
-        # Average direction of motion
+    # Average direction of motion
     store['movdirMn'] = np.arctan2(sumSin, sumCos)
 
-    store['motionCoherence'] = store['motionCoherence']
-    store['movdirMn'] = store['movdirMn']
+    # --- Individual body part speeds relative to center of mass ---
+    for bpt in bpts:
+        x_col = f"{bpt}_x"
+        y_col = f"{bpt}_y"
+        if x_col in M['bpts'].columns and y_col in M['bpts'].columns:
+            # Relative position
+            rel_x = M['bpts'][x_col] - store['centerX'].values
+            rel_y = M['bpts'][y_col] - store['centerY'].values
+
+            # Relative speed
+            rel_speed = np.sqrt(np.diff(rel_x) ** 2 + np.diff(rel_y) ** 2)
+            store[f'{bpt}_relSpeed'] = rel_speed[:, None]
+
+    # --- Speed ratios between body parts ---
+    for i, bpt1 in enumerate(bpts):
+        for bpt2 in bpts[i + 1:]:
+            if f'{bpt1}_relSpeed' in store and f'{bpt2}_relSpeed' in store:
+                speed1 = store[f'{bpt1}_relSpeed'].squeeze()
+                speed2 = store[f'{bpt2}_relSpeed'].squeeze()
+
+                # Avoid division by zero
+                ratio = np.full_like(speed1, np.nan)
+                valid = speed2 > 0.1  # minimum threshold
+                ratio[valid] = speed1[valid] / speed2[valid]
+
+                store[f'{bpt1}_{bpt2}_speedRatio'] = ratio[:, None]
+
+    # --- Higher-order motion features ---
+
+    # Acceleration (magnitude of change in speed)
+    center_accel = np.sqrt(
+        np.diff(store['centerSpeed'].squeeze()) ** 2
+    )
+    store['centerAccelMag'] = center_accel[:, None]
+
+    # Turning rate (change in movement direction)
+    movdir = store['movdirMn'].squeeze()
+    turning_rate = np.diff(unwrapAngles_with_nans(movdir))
+    store['turningRate'] = turning_rate[:, None]
+
+    # --- Rolling statistics on multiple timescales ---
+    for window_sec in [0.25, 0.5, 1.0, 2.0]:
+        win = int(window_sec * Fs)
+        if win < 3:
+            continue  # skip very small windows
+
+        # Rolling statistics on speed
+        speed_series = pd.Series(store['centerSpeed'].squeeze())
+        store[f'speed_roll_mean_{window_sec}s'] = (
+            speed_series.rolling(win, center=True, min_periods=1).mean().values[:, None]
+        )
+        store[f'speed_roll_std_{window_sec}s'] = (
+            speed_series.rolling(win, center=True, min_periods=1).std().values[:, None]
+        )
+        store[f'speed_roll_max_{window_sec}s'] = (
+            speed_series.rolling(win, center=True, min_periods=1).max().values[:, None]
+        )
+
+        # Rolling statistics on convex hull area
+        hull_series = pd.Series(store['convexHullArea'].squeeze())
+        store[f'hullArea_roll_mean_{window_sec}s'] = (
+            hull_series.rolling(win, center=True, min_periods=1).mean().values[:, None]
+        )
+        store[f'hullArea_roll_std_{window_sec}s'] = (
+            hull_series.rolling(win, center=True, min_periods=1).std().values[:, None]
+        )
 
     # --- Derivatives ---
     dt = 1 / Fs
@@ -451,12 +581,15 @@ def getPredictors(M, Fs):
     g2_long = savgol_coeffs(window_length_long, polyorder, deriv=2) * (1 / dt ** 2)
 
     # Only one circular field now
-    circFields = ['movdirMn']
+    circFields = ['movdirMn', 'turningRate']
     allFields = list(store.keys())
-    nonCircFields = [f for f in allFields if f not in circFields]
 
     # --- Derivative Computation ---
     for field in allFields:
+        # Skip fields that are already derivatives or rolling statistics
+        if any(suffix in field for suffix in ['_d1', '_d2', '_slow', '_var', '_roll_', 'speedRatio']):
+            continue
+
         x = store[field].squeeze()
         is_circ = field in circFields
 
@@ -488,6 +621,10 @@ def getPredictors(M, Fs):
     halfW = winSize // 2
 
     for field in allFields:
+        # Skip fields that already have variance or are rolling statistics
+        if any(suffix in field for suffix in ['_var', '_roll_', 'speedRatio']):
+            continue
+
         x = store[field].squeeze()
         is_circ = field in circFields
 
@@ -503,7 +640,7 @@ def getPredictors(M, Fs):
     # --- Pack into Table ---
     maxRows = len(M['meanX'])  # total number of frames
     perframes = convert_store_to_table(store, maxRows)
-    perframes = perframes.drop(columns=['movdirMn'])  # remove circular base field if undesired
+    perframes = perframes.drop(columns=['movdirMn'], errors='ignore')  # remove circular base field if undesired
 
     return perframes
 

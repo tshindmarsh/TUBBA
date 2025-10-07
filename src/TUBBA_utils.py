@@ -14,7 +14,7 @@ def save_inference_to_disk(video, inference_dict):
     out_dir = os.path.join(video['folder'], 'inference')
     os.makedirs(out_dir, exist_ok=True)
 
-    out_path = os.path.join(out_dir, f"{video_name}_inferred_v2.pkl")
+    out_path = os.path.join(out_dir, f"{video_name}_inferred.pkl")
     with open(out_path, 'wb') as f:
         pickle.dump(inference_dict, f)
 
@@ -445,30 +445,52 @@ def annotations_to_video(project_json_path, behavior, out_path, target=1):
     else:
         print(f"❌ No valid frames written for behavior '{behavior}'.")
 
-def detect_header_rows(file_path, max_check_rows=5):
-    """More robust header detection with additional checks"""
+def find_dlc_header_rows(file_path, max_check_rows=10):
+    """Find DLC header rows and identify where data starts"""
     temp_df = pd.read_csv(file_path, nrows=max_check_rows, header=None)
 
-    header_row_count = 0
+    coordinate_row_idx = None
+
+    # Look for the row with repeating x, y, likelihood pattern
     for i in range(len(temp_df)):
-        row = temp_df.iloc[i]
+        row = temp_df.iloc[i].fillna('')
+        row_str = [str(val).lower().strip() for val in row]
 
-        # Skip completely empty rows
-        if row.isna().all():
-            continue
-        total_non_null = row.count()
+        # Count occurrences of x, y, and likelihood
+        x_count = sum(1 for val in row_str if val == 'x')
+        y_count = sum(1 for val in row_str if val == 'y')
+        likelihood_count = sum(1 for val in row_str if 'likelihood' in val)
 
-        # Check if values look like column names (contain letters)
-        likely_headers = sum(
-            isinstance(val, str) and pd.notna(val) and any(c.isalpha() for c in str(val)) for val in row)
-
-        # Consider it a header if mostly text OR if it contains likely header names
-        if total_non_null > 0 and (likely_headers / total_non_null) > 0.3:
-            header_row_count += 1
-        else:
+        # If we see multiple x's, y's, and likelihoods, this is our coordinate row
+        if x_count >= 2 and y_count >= 2 and likelihood_count >= 2:
+            coordinate_row_idx = i
             break
 
-    return max(0, header_row_count)
+    if coordinate_row_idx is None:
+        return None, None
+
+    # Now find where the actual numeric data starts (after coordinate row)
+    data_start_idx = coordinate_row_idx + 1
+    for i in range(coordinate_row_idx + 1, len(temp_df)):
+        row = temp_df.iloc[i].fillna('')
+        # Check if row contains mostly numeric values
+        numeric_count = sum(1 for val in row if isinstance(val, (int, float)) or
+                          (isinstance(val, str) and val.replace('.','',1).replace('-','',1).isdigit()))
+
+        if numeric_count / len(row) > 0.5:  # If more than 50% numeric
+            data_start_idx = i
+            break
+
+    # Return header indices and which rows to skip
+    if coordinate_row_idx > 0:
+        header_indices = [coordinate_row_idx - 1, coordinate_row_idx]
+    else:
+        header_indices = [coordinate_row_idx]
+
+    # Skip rows between coordinate row and data start
+    rows_to_skip = list(range(coordinate_row_idx + 1, data_start_idx))
+
+    return header_indices, rows_to_skip
 
 
     # Self-stability: how far each bodypart strays from its own running mean

@@ -140,19 +140,6 @@ Training in TUBBA proceeds in two phases:
     •    A multi-class XGBoost classifier is trained on the feature vectors from all videos.
     •    Predictions are then smoothed using a bidirectional LSTM, which learns temporal structure and contextual dependencies.
     •    The combined XGB + LSTM model is serialized to a .pkl file, along with normalization parameters and behavior mappings.
-
-Training in TUBBA proceeds in two phases:
-
-1. Feature Preparation and Augmentation
-    •    Training data is extracted from annotated frames using a sliding window approach.
-    •    Per-frame features are z-scored and NaNs imputed where needed.
-    •    An optional jittering process adds Gaussian noise to positive and negative samples to improve generalization.
-    •    Data is balanced to prevent bias toward the majority class, with configurable ratios of positive, negative, and unlabeled examples.
-
-2. Model Training
-    •    A multi-class XGBoost classifier is trained on the feature vectors from all videos.
-    •    Predictions are then smoothed using a bidirectional LSTM, which learns temporal structure and contextual dependencies.
-    •    The combined XGB + LSTM model is serialized to a .pkl file, along with normalization parameters and behavior mappings.
     
 
 ### What is my model picking up on?
@@ -215,7 +202,7 @@ TUBBA can also export annotations made in the gui to csv files in this same form
 
 TUBBA supports **custom feature extraction scripts** that process video and tracking data into feature vectors used for behavior classification. These scripts live in:
 
-    src/featureExtractions/
+    src/features/
 
 Each script must expose a function called `tracksToFeatures(folder, spatialSR)`. When a new project is created, TUBBA will automatically list available scripts in a dropdown so you can select the one appropriate for your dataset.
 
@@ -297,7 +284,7 @@ The `perframes` can contain raw or derived features — TUBBA typically handles 
 
 To add your own script:
 
-1. Create a new `.py` file inside `src/featureExtractions/`
+1. Create a new `.py` file inside `src/features/`
 2. Define a function like `myCustomFeatures(folder, spatialSR)`
 3. Return the same `vidInfo` dict and `DataFrame` format
 4. TUBBA will automatically pick it up in the dropdown at project creation

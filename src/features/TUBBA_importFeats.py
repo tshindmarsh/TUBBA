@@ -1,4 +1,5 @@
 import os
+import sys
 import glob
 
 import cv2
@@ -9,8 +10,11 @@ from sklearn.decomposition import PCA
 from itertools import combinations
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
-from TUBBA_utils import detect_header_rows, convert_store_to_table, circ_var, unwrapAngles_with_nans, wrapTo2Pi, variable_is_circular
 from scipy.spatial.distance import pdist, squareform
+
+# Add parent directory to path to import TUBBA_utils
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from TUBBA_utils import detect_header_rows, convert_store_to_table, circ_var, unwrapAngles_with_nans, wrapTo2Pi, variable_is_circular
 import matplotlib.pyplot as plt
 import warnings
 import random

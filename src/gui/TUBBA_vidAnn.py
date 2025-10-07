@@ -1031,7 +1031,7 @@ class VideoAnnotator(QMainWindow):
                 return None
 
             # Build the full path to the script
-            script_dir = os.path.join(os.path.dirname(__file__), 'featureExtractions')
+            script_dir = os.path.join(os.path.dirname(__file__), '..', 'features')
             script_path = os.path.join(script_dir, selected_script)
 
             # Import the module dynamically
@@ -1167,9 +1167,9 @@ class VideoAnnotator(QMainWindow):
 
         if reply == QMessageBox.Yes:
             self.project['videos'].pop(self.current_video_idx)
+            self.video_selector.removeItem(self.current_video_idx)
             self.current_video_idx = max(0, self.current_video_idx - 1)
             self.load_video(self.project['videos'][self.current_video_idx]['folder'])
-            self.video_selector.removeItem(self.current_video_idx)
             print("Video successfully removed from the project.")
 
     def remove_behavior(self):
@@ -1224,7 +1224,9 @@ class VideoAnnotator(QMainWindow):
             print(f"📁 Exported: {output_path}")
 
     def train_TUBBAmodel(self):
-        import TUBBA_train
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from models import TUBBA_train
 
         # Save first to ensure that all annotations are included
         print(f"Training model...")
@@ -1243,8 +1245,10 @@ class VideoAnnotator(QMainWindow):
         return None
 
     def run_model_inference(self):
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from TUBBA_utils import save_inference_to_disk
-        import TUBBA_infer
+        from models import TUBBA_infer
 
         print(f"Inferring behaviors...")
         self.save_project()
@@ -1269,8 +1273,10 @@ class VideoAnnotator(QMainWindow):
         return None
 
     def batch_run_model_inference(self):
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from TUBBA_utils import save_inference_to_disk
-        import TUBBA_infer
+        from models import TUBBA_infer
 
         print(f"Starting batch inference...")
         self.save_project()

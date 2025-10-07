@@ -1,0 +1,15 @@
+data/
+data_dlcFeatsOnly/
+notebooks/
+projects/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride

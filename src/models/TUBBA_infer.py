@@ -1,13 +1,16 @@
 import os
+import sys
 import json
 import joblib
 import numpy as np
 import pandas as pd
 import torch
-
 import torch.nn as nn
-from TUBBA_utils import variable_is_circular, normalize_features, ensure_normalized_features
 from sklearn.impute import SimpleImputer
+
+# Add parent directory to path to import TUBBA_utils
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from TUBBA_utils import variable_is_circular, normalize_features, ensure_normalized_features
 
 class SmoothingLSTM(torch.nn.Module):
     def __init__(self, input_size, hidden_size=32, dropout_rate=0.3, attention=True):
@@ -140,16 +143,17 @@ def TUBBA_modelInference_lite(project_json_path, video_name, video_folder):
     # Correct device selection for Windows (and fallback to CPU if necessary)
     if torch.cuda.is_available():
         device = torch.device("cuda")
-        print("✅ Using CUDA GPU backend")
+        print("✅ Using CUDA (NVIDIA GPU)")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+        print("✅ Using MPS (Apple Metal GPU)")
     else:
         device = torch.device("cpu")
-        print("⚠️ No CUDA found — falling back to CPU")
+        print("⚠️ No GPU backend found — falling back to CPU")
 
     bundle = joblib.load(model_path)
     models = bundle['models']
     behaviors = bundle['behaviors']
-    window_size = bundle['window_size']
-    half_window = window_size // 2
 
     video = next(
         (v for v in project['videos']
