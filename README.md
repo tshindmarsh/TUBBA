@@ -1,4 +1,4 @@
-# TUBBA: Temporal Unified Behavioral Bout Analysis
+# TUBBA: Temporally Unified Behavioral Bout Analysis
 
 TUBBA is a modular pipeline for annotating and classifying animal behavior from video recordings. 
 In part, it stems from my search for intuitive and flexible tools for rapid parallel labeling of multiple 
