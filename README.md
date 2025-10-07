@@ -30,14 +30,43 @@ https://github.com/user-attachments/assets/05a4235e-3212-4232-ada5-76ed9b93d714
 
 ## Installing TUBBA
 
-TUBBA can easily be run straight from source. I recommend creating a new conda environment (miniConda on macOS).
+### Quick Install (Recommended)
+
+Run the installation script:
 
 ```bash
-    conda create -n tubba python=3.12
-    conda activate tubba
-    conda install -c conda-forge pyqt matplotlib seaborn scikit-learn h5py joblib opencv numpy pandas xgboost tqdm pytables
-    cd /[path/to/TUBBA/src]
-    python TUBBA.py
+./install.sh
+```
+
+The script will:
+- Create a `tubba` conda environment with Python 3.12
+- Install all dependencies
+- Prompt you about GPU support (Windows/Linux only)
+
+### GPU Support
+
+For faster training with NVIDIA GPUs (Windows/Linux) or Apple Silicon (macOS), see **[GPU_SETUP.md](GPU_SETUP.md)** for detailed instructions.
+
+### Manual Installation
+
+```bash
+conda create -n tubba python=3.12
+conda activate tubba
+conda install -c conda-forge pyqt matplotlib seaborn scikit-learn h5py joblib opencv numpy pandas xgboost tqdm pytables
+
+# For CPU only:
+conda install pytorch cpuonly -c pytorch
+
+# For NVIDIA GPU (Windows/Linux):
+conda install pytorch pytorch-cuda=11.8 -c pytorch -c nvidia
+
+# For Apple Silicon (macOS):
+conda install pytorch -c pytorch
+```
+
+Or use pip:
+```bash
+pip install -r requirements.txt
 ```
 
 Major packages:
