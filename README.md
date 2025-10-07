@@ -32,7 +32,7 @@ https://github.com/user-attachments/assets/05a4235e-3212-4232-ada5-76ed9b93d714
 
 ### Quick Install (Recommended)
 
-Run the installation script:
+Run the installation script (in Git Bash or WSL on Windows):
 
 ```bash
 ./install.sh
