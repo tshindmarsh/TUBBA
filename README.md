@@ -52,7 +52,7 @@ For faster training with NVIDIA GPUs (Windows/Linux) or Apple Silicon (macOS), s
 ```bash
 conda create -n tubba python=3.12
 conda activate tubba
-conda install -c conda-forge pyqt matplotlib seaborn scikit-learn h5py joblib opencv numpy pandas xgboost tqdm pytables
+conda install -c conda-forge pyqt matplotlib seaborn scikit-learn h5py joblib opencv numpy pandas xgboost tqdm pytables av
 
 # For CPU only:
 conda install pytorch cpuonly -c pytorch
