@@ -58,7 +58,7 @@ conda install -c conda-forge pyqt matplotlib seaborn scikit-learn h5py joblib op
 conda install pytorch cpuonly -c pytorch
 
 # For NVIDIA GPU (Windows/Linux):
-conda install pytorch pytorch-cuda=11.8 -c pytorch -c nvidia
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
 # For Apple Silicon (macOS):
 conda install pytorch -c pytorch
