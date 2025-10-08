@@ -14,6 +14,8 @@ import h5py
 import traceback
 import seaborn as sns
 import importlib.util
+import av
+import platform
 
 
 class ZoomableVideoLabel(QLabel):
@@ -485,6 +487,23 @@ class VideoAnnotator(QMainWindow):
         self.display_inference = False
         self.current_inference = None
 
+        # Detect OS and set video backend
+        self.os_type = platform.system()
+        self.use_pyav = self.os_type in ['Windows', 'Linux']
+
+        # Set modifier key based on platform
+        if self.os_type == 'Darwin':  # macOS
+            self.modifier_key = Qt.MetaModifier
+            self.modifier_name = "Cmd"
+        else:  # Windows, Linux
+            self.modifier_key = Qt.ControlModifier
+            self.modifier_name = "Ctrl"
+
+        if self.use_pyav:
+            print(f"🎥 Using PyAV backend for {self.os_type}")
+        else:
+            print(f"🎥 Using OpenCV backend for {self.os_type}")
+
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.next_frame)
 
@@ -715,8 +734,6 @@ class VideoAnnotator(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(shortcutHelp_act)
 
-        print('Hey brother, you are using TUBBA! [scottish accent]')
-
         self.load_video(self.project['videos'][self.current_video_idx]['folder'])
 
     def load_video(self, folder):
@@ -726,16 +743,104 @@ class VideoAnnotator(QMainWindow):
             return
 
         video_path = os.path.join(folder, mp4s[0])
-        self.cap = cv2.VideoCapture(video_path)
 
-        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+        if self.use_pyav:
+            # PyAV backend (Windows/Linux)
+            self.container = av.open(video_path)
+            self.video_stream = self.container.streams.video[0]
+
+            self.total_frames = self.video_stream.frames
+            self.fps = float(self.video_stream.average_rate)
+
+            # Initialize frame iterator for smooth playback
+            self.frame_iterator = None
+            self.last_decoded_frame = None
+        else:
+            # OpenCV backend (macOS)
+            self.cap = cv2.VideoCapture(video_path)
+
+            self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+
         self.slider.setMaximum(self.total_frames - 1)
+        print(f"🔊 Video info: {self.total_frames} frames at {self.fps} fps")
 
         self.show_frame(0)
         self.current_frame_idx = 0
 
+    def show_frame(self, idx):
+        if self.use_pyav:
+            self._show_frame_pyav(idx)
+        else:
+            self._show_frame_opencv(idx)
+
+    def _show_frame_pyav(self, idx):
+        """PyAV implementation for Windows/Linux"""
+        if not hasattr(self, 'container') or self.container is None:
+            return
+
+        try:
+            # If jumping to a different frame (not sequential), reset iterator
+            if (self.frame_iterator is None or
+                    abs(idx - self.current_frame_idx) > 1):
+                # Seek to nearest keyframe before target
+                timestamp = int(idx / self.fps * av.time_base)
+                self.container.seek(timestamp, stream=self.video_stream, backward=True)
+                self.frame_iterator = self.container.decode(video=0)
+
+            # Decode frames until we reach the target
+            for frame in self.frame_iterator:
+                if frame.pts * self.video_stream.time_base * self.fps >= idx:
+                    # Convert to numpy array
+                    img = frame.to_ndarray(format='rgb24')
+
+                    h, w, ch = img.shape
+                    bytes_per_line = ch * w
+                    qt_img = QImage(img.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
+                    pixmap = QPixmap.fromImage(qt_img)
+
+                    self.video_label.setPixmap(pixmap)
+                    self.slider.blockSignals(True)
+                    self.slider.setValue(idx)
+                    self.slider.blockSignals(False)
+                    self.timeline.update()
+
+                    self.last_decoded_frame = idx
+                    break
+
+        except Exception as e:
+            print(f"⚠️ Error showing frame {idx}: {e}")
+            # Reset iterator on error
+            self.frame_iterator = None
+
+    def _show_frame_opencv(self, idx):
+        """OpenCV implementation for macOS"""
+        if not hasattr(self, 'cap') or not self.cap.isOpened():
+            return
+
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = self.cap.read()
+        if ret:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w, ch = frame.shape
+            bytes_per_line = ch * w
+            qt_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(qt_img)
+            self.video_label.setPixmap(pixmap)
+            self.slider.blockSignals(True)
+            self.slider.setValue(idx)
+            self.slider.blockSignals(False)
+            self.timeline.update()
+
     def switch_video(self, idx):
+        # Close old video resources
+        if self.use_pyav:
+            if hasattr(self, 'container') and self.container is not None:
+                self.container.close()
+                self.frame_iterator = None
+        else:
+            if hasattr(self, 'cap') and self.cap is not None:
+                self.cap.release()
 
         self.current_video_idx = idx
         self.load_video(self.project['videos'][idx]['folder'])
@@ -763,24 +868,6 @@ class VideoAnnotator(QMainWindow):
 
     def set_model(self, idx):
         self.currentModelType = self.availModels[idx]
-
-    def show_frame(self, idx):
-        if not self.cap.isOpened():
-            return
-
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ret, frame = self.cap.read()
-        if ret:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            h, w, ch = frame.shape
-            bytes_per_line = ch * w
-            qt_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
-            pixmap = QPixmap.fromImage(qt_img)
-            self.video_label.setPixmap(pixmap)
-            self.slider.blockSignals(True)
-            self.slider.setValue(idx)
-            self.slider.blockSignals(False)
-            self.timeline.update()
 
     def next_frame(self):
         if self.current_frame_idx < self.total_frames - 1:
@@ -912,9 +999,9 @@ class VideoAnnotator(QMainWindow):
             self.previous_frame()
         elif event.key() == Qt.Key_Right:
             self.next_frame()
-        elif event.key() == Qt.Key_S and (event.modifiers() & Qt.MetaModifier):
+        elif event.key() == Qt.Key_S and (event.modifiers() & self.modifier_key):
             self.save_project()
-        elif event.key() == Qt.Key_Z and (event.modifiers() & Qt.MetaModifier):
+        elif event.key() == Qt.Key_Z and (event.modifiers() & self.modifier_key):
             self.undo_last_annotation()
         else:
             super().keyPressEvent(event)
@@ -927,8 +1014,8 @@ class VideoAnnotator(QMainWindow):
             "<b>Space</b>: Play/Pause video<br>"
             "<b>Left Arrow</b>: Previous frame<br>"
             "<b>Right Arrow</b>: Next frame<br>"
-            "<b>Cmd + S</b>: Save project<br>"
-            "<b>Cmd + Z</b>: Undo last annotation"
+            f"<b>{self.modifier_name} + S</b>: Save project<br>"
+            f"<b>{self.modifier_name} + Z</b>: Undo last annotation"
         )
 
         QMessageBox.information(self, "Keyboard Shortcuts", shortcuts)
