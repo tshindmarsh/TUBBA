@@ -61,16 +61,13 @@ conda install pytorch cpuonly -c pytorch
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
 # For Apple Silicon (macOS):
-conda install pytorch -c pytorch
+pip install torch torchvision torchaudio
 ```
 
 Or use pip:
 ```bash
 pip install -r requirements.txt
 ```
-
-Major packages:
-- `PyQt5`, `xgboost`, `torch`, `opencv-python`, `pandas`, `scikit-learn`, `matplotlib`, `joblib`, `h5py`, `numpy`
 
 ---
 
