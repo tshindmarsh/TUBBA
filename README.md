@@ -88,7 +88,7 @@ From there, you can either:
 Creating a new project is simple. First, you should indicate whether the behavioral videos and matched keypoints have previously been downsampled (quite common during pose estimation). If the downsampled checkbox is marked, the user should enter a downsampling factor. **If no keypoints or perframe features are provided and you just want to annotate videos, check the "annotation only" checkbox, and don't worry about downsampling or preprocesessing!** 
 
 Next, you should: 
-- **Add behaviors** First add a list of behaviors (comma-separated) that they wish to track (don't worry if this is not complete - you can always add more later). 
+- **Add behaviors** First add a list of behaviors (comma-separated) that you wish to track (don't worry if this is not complete - you can always add more later). 
 - **Add videos** Typically, each video and its corresponding tracking files (csv format) are placed inside a separate folder. You can select multiple folders to batch-add videos to your project. However, if you are running in annotation-only mode, please provide paths to your videos directly instead. 
 - **Select a feature script** Select the feature extraction script you'd like to use. These scripts are stored in the featureExtractions folder in TUBBA/src, and extract some core information about each video (frame rates, absolute and relative paths etc), and creates a table of frame-by-frame features that TUBBA can use to learn and infer the signatures of your behaviors. Please see the "feature script" section for more information. 
 - **Pre-process data** Executes the feature extraction script
@@ -202,7 +202,7 @@ You can also run batch inference from the gui, on all videos in the project. You
 In order to validate your model's performance, I recommend creating stitched videos of inferred instances of each of your behaviors. 
 
 ```python
-from src.TUBBA_utils import predictions_to_video
+from TUBBA_utils import predictions_to_video
 
 predictions_to_video(
     source_video_path="...mp4",
