@@ -348,8 +348,12 @@ class TimelineCanvas(QWidget):
                 clicked_frame = int(left_edge + (x_click / width) * frames_shown)
                 clicked_frame = max(0, min(total_frames - 1, clicked_frame))
 
-                self.annotator.current_frame_idx = clicked_frame
+                # Reset the iterator to force a seek when jumping
+                if self.annotator.use_pyav:
+                    self.annotator.frame_iterator = None
+
                 self.annotator.show_frame(clicked_frame)
+                self.annotator.current_frame_idx = clicked_frame
 
     def mouseMoveEvent(self, event):
         x = event.x()
@@ -775,25 +779,50 @@ class VideoAnnotator(QMainWindow):
             self._show_frame_opencv(idx)
 
     def _show_frame_pyav(self, idx):
-        """PyAV implementation for Windows/Linux"""
+        """PyAV implementation for Windows/Linux (fixed timestamp units and reporting)."""
         if not hasattr(self, 'container') or self.container is None:
             return
 
         try:
-            # If jumping to a different frame (not sequential), reset iterator
+            stream = self.video_stream
+            fps = float(self.fps)
+
+            # If jumping more than one frame, reset iterator and seek
             if (self.frame_iterator is None or
-                    abs(idx - self.current_frame_idx) > 1):
-                # Seek to nearest keyframe before target
-                timestamp = int(idx / self.fps * av.time_base)
-                self.container.seek(timestamp, stream=self.video_stream, backward=True)
-                self.frame_iterator = self.container.decode(video=0)
+                    self.last_decoded_frame is None or
+                    abs(idx - (self.last_decoded_frame or -999999)) > 1):
 
-            # Decode frames until we reach the target
+                # target time in seconds for requested frame index:
+                target_seconds = idx / fps
+
+                # stream.time_base is a Fraction (seconds per tick). offset must be in stream.time_base units.
+                if stream.time_base is None:
+                    tb = 1.0 / fps
+                else:
+                    tb = float(stream.time_base)
+
+                # offset expressed in stream.time_base "ticks"
+                timestamp = int(target_seconds / tb)
+
+                # Seek using the stream's time base units (stream provided).
+                self.container.seek(timestamp, stream=stream, backward=True)
+                # Decode frames for that stream (pass the stream object)
+                self.frame_iterator = self.container.decode(stream)
+
+            # decode forward until we find the frame with frame_num >= idx
+            frame_found = False
+            frame_count = 0
             for frame in self.frame_iterator:
-                if frame.pts * self.video_stream.time_base * self.fps >= idx:
-                    # Convert to numpy array
-                    img = frame.to_ndarray(format='rgb24')
+                frame_count += 1
+                if frame.pts is None:
+                    continue
 
+                # Convert pts -> seconds, then seconds -> approx frame index
+                frame_time = float(frame.pts * stream.time_base)
+                frame_num = int(round(frame_time * fps))
+
+                if frame_num >= idx:
+                    img = frame.to_ndarray(format='rgb24')
                     h, w, ch = img.shape
                     bytes_per_line = ch * w
                     qt_img = QImage(img.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
@@ -801,12 +830,51 @@ class VideoAnnotator(QMainWindow):
 
                     self.video_label.setPixmap(pixmap)
                     self.slider.blockSignals(True)
-                    self.slider.setValue(idx)
+                    # set slider to the *actual* displayed frame number, not the requested idx
+                    self.slider.setValue(frame_num)
                     self.slider.blockSignals(False)
                     self.timeline.update()
 
-                    self.last_decoded_frame = idx
+                    # record the actual displayed frame
+                    self.last_decoded_frame = frame_num
+                    frame_found = True
                     break
+
+            # If we didn't find the frame, try a more conservative seek (go back ~1s) and retry once
+            if not frame_found:
+                self.frame_iterator = None
+
+                # compute fallback: go back 1 second (in stream time_base units)
+                fallback_offset = max(0, int((idx / fps - 1.0) / tb))
+                self.container.seek(fallback_offset, stream=stream, backward=True)
+                self.frame_iterator = self.container.decode(stream)
+
+                for frame in self.frame_iterator:
+                    if frame.pts is None:
+                        continue
+                    frame_time = float(frame.pts * stream.time_base)
+                    frame_num = int(round(frame_time * fps))
+
+                    if frame_num >= idx:
+                        img = frame.to_ndarray(format='rgb24')
+                        h, w, ch = img.shape
+                        bytes_per_line = ch * w
+                        qt_img = QImage(img.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
+                        pixmap = QPixmap.fromImage(qt_img)
+
+                        self.video_label.setPixmap(pixmap)
+                        self.slider.blockSignals(True)
+                        self.slider.setValue(frame_num)
+                        self.slider.blockSignals(False)
+                        self.timeline.update()
+
+                        self.last_decoded_frame = frame_num
+                        frame_found = True
+                        break
+
+                if not frame_found:
+                    print(
+                        f"❌ Still couldn't find frame >= {idx} after retry (last_decoded_frame={self.last_decoded_frame})")
 
         except Exception as e:
             print(f"⚠️ Error showing frame {idx}: {e}")
@@ -1348,7 +1416,11 @@ class VideoAnnotator(QMainWindow):
 
         # save for now
         inferred_path = save_inference_to_disk(video, results)
-        self.project['videos'][self.current_video_idx]['inferred_path'] = os.path.relpath(inferred_path)
+        try:
+            self.project['videos'][self.current_video_idx]['inferred_path'] = os.path.relpath(inferred_path)
+        except ValueError:
+            # If paths are on different drives, use absolute path
+            self.project['videos'][self.current_video_idx]['inferred_path'] = os.path.abspath(inferred_path)
 
         # allow viewing of current results
         self.display_inference = True
@@ -1377,7 +1449,11 @@ class VideoAnnotator(QMainWindow):
 
             # save for now
             inferred_path = save_inference_to_disk(video, results)
-            video['inferred_path'] = os.path.relpath(inferred_path)
+            try:
+                video['inferred_path'] = os.path.relpath(inferred_path)
+            except ValueError:
+                # If paths are on different drives, use absolute path
+                video['inferred_path'] = os.path.abspath(inferred_path)
 
         self.save_project()
 
