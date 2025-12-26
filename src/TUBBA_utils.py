@@ -445,6 +445,31 @@ def annotations_to_video(project_json_path, behavior, out_path, target=1):
     else:
         print(f"❌ No valid frames written for behavior '{behavior}'.")
 
+def detect_header_rows(file_path, max_check_rows=10):
+    """Detect number of header rows in a CSV file"""
+    temp_df = pd.read_csv(file_path, nrows=max_check_rows, header=None)
+
+    # Count how many initial rows are likely headers (non-numeric)
+    n_header_rows = 0
+    for i in range(len(temp_df)):
+        row = temp_df.iloc[i].fillna('')
+
+        # Check if row contains mostly numeric values (excluding empty cells)
+        non_empty_vals = [val for val in row if val != '']
+        if len(non_empty_vals) == 0:
+            # All empty, treat as header
+            n_header_rows += 1
+            continue
+
+        numeric_count = sum(1 for val in non_empty_vals if isinstance(val, (int, float)) or
+                          (isinstance(val, str) and str(val).replace('.','',1).replace('-','',1).replace('e','',1).isdigit()))
+
+        if numeric_count / len(non_empty_vals) > 0.5:  # If more than 50% numeric, data starts here
+            break
+        n_header_rows += 1
+
+    return n_header_rows
+
 def find_dlc_header_rows(file_path, max_check_rows=10):
     """Find DLC header rows and identify where data starts"""
     temp_df = pd.read_csv(file_path, nrows=max_check_rows, header=None)
