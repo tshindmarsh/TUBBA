@@ -319,13 +319,79 @@ Use this to support alternative tracking pipelines, species, or custom features.
 
 ### 😠 But Tom, I don't want to write my own code!
 
-All good! Sometimes we just want to plug and play. There are three potential workarounds. 
+All good! Sometimes we just want to plug and play. There are three potential workarounds.
 
-1. You can use TUBBA in annotation-only mode! If your videos are short and you don't have too many of them, hand-annotation is often the path of least resistance. TUBBA was in large-part developed to provide a quick and easy way of annotating multiple behaviors in parallel. 
+1. You can use TUBBA in annotation-only mode! If your videos are short and you don't have too many of them, hand-annotation is often the path of least resistance. TUBBA was in large-part developed to provide a quick and easy way of annotating multiple behaviors in parallel.
 2. Got keypoint tracks? Great. We provide a default `TUBBA_getFeats` script that will search your video folder for a tracking data (in csv format), and create hundreds to thousands of features from these alone that can be used to train a model. This has the added benefit of being largely environment-agnostic. These features relate to the organization of the keypoints in space, and their angular and euclidian relationships to one another. `TUBBA_getFeats` will try to filter out large jumps in raw tracking data, if they exist, and interpolate across short bouts of missing frames
-3. You can pre-define features, and let TUBBA do the linking, by runnign `TUBBA_importFeats`. Just place the features you care about (perhaps the speed of your animal, distance to keypoints, joint angles etc.) into a frame-by-frame csv file (`[n_frames × n_features]`) inside the corresponding video folder. You should have a header-row providing a useful descriptor name for each column. TUBBA will ask you if you'd like it to perform a "feature expansion", in which it computes the first few derivatives of the core features and smooths them with both long and short windows to provide both instantaneous values and global context.
+3. You can pre-define features, and let TUBBA do the linking, by running `TUBBA_importFeats`. Just place the features you care about (perhaps the speed of your animal, distance to keypoints, joint angles etc.) into a frame-by-frame csv file (`[n_frames × n_features]`) inside the corresponding video folder. You should have a header-row providing a useful descriptor name for each column. TUBBA will ask you if you'd like it to perform a "feature expansion", in which it computes the first few derivatives of the core features and smooths them with both long and short windows to provide both instantaneous values and global context.
 
-⚠️ TUBBA models are only as good as the features they receive. I urge you to think carefully about which features should be left out of your model to make your predictions accurate, unbiased, and generalizable. 
+⚠️ TUBBA models are only as good as the features they receive. I urge you to think carefully about which features should be left out of your model to make your predictions accurate, unbiased, and generalizable.
+
+### 📁 Using Pre-defined Features with TUBBA_importFeats
+
+If you already have computed features from your own analysis pipeline, TUBBA can import them directly! Here's how to structure your data:
+
+#### Folder Structure
+
+Each video should be in its own folder with exactly **one video file** and **one feature file**:
+
+```
+project_dir/
+├── Video1/
+│   ├── recording.mp4              # Your video file
+│   └── perframe_feats.csv         # Your features (CSV or H5)
+├── Video2/
+│   ├── another_video.mp4
+│   └── features.h5                # H5 format also supported!
+└── Video3/...
+```
+
+#### Supported File Formats
+
+TUBBA_importFeats accepts **two formats**:
+
+1. **CSV files** (`.csv`)
+   - Must have **one header row** with feature names
+   - Each subsequent row = one video frame
+   - Columns = feature values (numeric)
+   - Empty cells are allowed (will be handled as NaN)
+
+   Example:
+   ```csv
+   speed,distance_to_shelter,body_angle,tail_curvature
+   0.52,25.3,1.57,0.12
+   0.48,24.1,1.55,0.09
+   ...
+   ```
+
+2. **HDF5 files** (`.h5`) - **Recommended for large datasets**
+   - Should contain a pandas DataFrame stored with key `'perframes'` or `'featureData'`
+   - Much faster to load than CSV
+   - Can be created with: `df.to_hdf('features.h5', key='perframes', mode='w')`
+
+#### File Selection Priority
+
+If multiple files exist in a folder, TUBBA will:
+1. **Prioritize H5 files** over CSV (faster loading)
+2. Look for files with `"feature"` in the filename
+3. Exclude files with `"annotations"` in the filename
+
+#### Important Requirements
+
+- ✅ Exactly **one video** (`.mp4`) per folder
+- ✅ Exactly **one feature file** (`.csv` or `.h5`) per folder
+- ✅ Number of feature rows **must match** number of video frames
+- ✅ CSV must have a header row with column names
+- ✅ Features should be numeric (NaN/empty values are OK)
+
+#### Feature Expansion
+
+When you preprocess data with `TUBBA_importFeats`, you'll be prompted whether to perform **feature expansion**:
+
+- **Yes**: TUBBA will create derivative features (velocity, acceleration, smoothed versions, variance) from your base features
+- **Skip**: TUBBA will use your features as-is
+
+Feature expansion is recommended if you're providing simple/raw measurements (like distances or angles), but can be skipped if you've already computed derivatives and temporal features yourself. 
 
 ---
 
