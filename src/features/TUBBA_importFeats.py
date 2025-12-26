@@ -30,7 +30,7 @@ def tracksToFeatures(parent, spatialSR):
         vidInfo['samplingRate'] = spatialSR
         vidInfo['frameRate'] = None
         print(f"Warning: Bad directory detected! Skipping {parent}")
-        return vidInfo, None
+        return vidInfo
 
     # Find video files
     mp4_files = glob.glob(os.path.join(parent, '*.mp4'))
@@ -42,7 +42,7 @@ def tracksToFeatures(parent, spatialSR):
         vidInfo['samplingRate'] = spatialSR
         vidInfo['frameRate'] = None
         print(f"Warning: Multiple or no videos detected in {parent}... Skipping")
-        return vidInfo, None
+        return vidInfo
     else:
         # Load video
         vidInfo['name'] = os.path.basename(mp4_files[0])
@@ -54,45 +54,83 @@ def tracksToFeatures(parent, spatialSR):
 
         frame_count = int(vc.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # Find CSV files
+    # Find CSV or H5 feature files
     csv_files = [os.path.basename(f) for f in glob.glob(os.path.join(parent, '*.csv'))]
+    h5_files = [os.path.basename(f) for f in glob.glob(os.path.join(parent, '*.h5'))]
 
-    if len(csv_files) != 1:
-        print(f"Warning: Multiple or no csv files detected in {parent}...")
-        feature_files = [f for f in csv_files if 'feature' in f]
-        if len(feature_files) == 1:
-            print(f"Found tracking file: {feature_files[0]}")
-        else:
-            feature_files = [f for f in csv_files if 'annotations' not in f]
-            if len(feature_files) == 1:
-                print(f"Found tracking file: {feature_files[0]}")
+    # Prioritize H5 files, then CSV files
+    feature_file = None
+    file_type = None
+
+    if len(h5_files) == 1:
+        feature_file = h5_files[0]
+        file_type = 'h5'
+        print(f"Found H5 feature file: {feature_file}")
+    elif len(h5_files) > 1:
+        # Multiple H5 files - try to find one with 'feature' in name
+        h5_feature_files = [f for f in h5_files if 'feature' in f.lower()]
+        if len(h5_feature_files) == 1:
+            feature_file = h5_feature_files[0]
+            file_type = 'h5'
+            print(f"Found H5 feature file: {feature_file}")
+
+    # If no H5 file found, look for CSV
+    if feature_file is None:
+        if len(csv_files) == 1:
+            feature_file = csv_files[0]
+            file_type = 'csv'
+            print(f"Found CSV feature file: {feature_file}")
+        elif len(csv_files) > 1:
+            print(f"Warning: Multiple CSV files detected in {parent}...")
+            csv_feature_files = [f for f in csv_files if 'feature' in f.lower()]
+            if len(csv_feature_files) == 1:
+                feature_file = csv_feature_files[0]
+                file_type = 'csv'
+                print(f"Found CSV feature file: {feature_file}")
             else:
-                return vidInfo, None
-    else:
-        feature_files = csv_files[0]
-        print(f"Found tracking file: {feature_files}")
+                csv_feature_files = [f for f in csv_files if 'annotations' not in f.lower()]
+                if len(csv_feature_files) == 1:
+                    feature_file = csv_feature_files[0]
+                    file_type = 'csv'
+                    print(f"Found CSV feature file: {feature_file}")
 
-    # Load tracking
-    feature_path = os.path.join(parent, feature_files)
-    nHeaderRows = detect_header_rows(feature_path)
-
-    print(f"Detected {nHeaderRows} header rows")
-
-    if nHeaderRows == 0:
-        # No headers detected, read normally
-        featureData = pd.read_csv(feature_path)
-    elif nHeaderRows == 1:
-        # Single header row
-        featureData = pd.read_csv(feature_path, header=0)
-    else:
-        # Multiple header rows - use list of row indices
-        header_indices = list(range(nHeaderRows))[0:] # Use all rows as merged header
-        featureData = pd.read_csv(feature_path, header=header_indices)
-
-    if featureData is None:
-        print(f"Error: No feature file found, cannot continue. Please check that a csv file with tracking data exists in {parent}.")
+    if feature_file is None:
+        print(f"Error: No feature file (.csv or .h5) found in {parent}.")
         vidInfo['status'] = 0
-        return vidInfo, None
+        return vidInfo
+
+    # Load feature data based on file type
+    feature_path = os.path.join(parent, feature_file)
+
+    if file_type == 'h5':
+        print(f"Loading H5 file...")
+        try:
+            featureData = pd.read_hdf(feature_path, key='perframes')
+            print(f"Loaded data with shape: {featureData.shape}")
+        except:
+            try:
+                featureData = pd.read_hdf(feature_path, key='featureData')
+                print(f"Loaded data with shape: {featureData.shape}")
+            except Exception as e:
+                print(f"Error loading H5 file: {e}")
+                vidInfo['status'] = 0
+                return vidInfo
+    else:  # CSV
+        nHeaderRows = detect_header_rows(feature_path)
+        print(f"Detected {nHeaderRows} header rows")
+
+        if nHeaderRows == 0:
+            featureData = pd.read_csv(feature_path)
+        elif nHeaderRows == 1:
+            featureData = pd.read_csv(feature_path, header=0)
+        else:
+            header_indices = list(range(nHeaderRows))
+            featureData = pd.read_csv(feature_path, header=header_indices)
+
+    if featureData is None or len(featureData) == 0:
+        print(f"Error: Could not load feature data from {feature_file}.")
+        vidInfo['status'] = 0
+        return vidInfo
 
     Fs = vidInfo['frameRate']
 
@@ -144,7 +182,7 @@ def tracksToFeatures(parent, spatialSR):
             print(
                 f"Error: Dimensions of {feature_file} do not match number of video frames in {vidInfo['name']}. Skipping...")
             vidInfo['status'] = 0
-            return vidInfo, None
+            return vidInfo
 
 
         feature_path = os.path.join(parent, vidInfo['featureFile'])
@@ -165,7 +203,7 @@ def tracksToFeatures(parent, spatialSR):
         print(
             f"Error: Dimensions of {feature_file} do not match number of video frames in {vidInfo['name']}. Skipping...")
         vidInfo['status'] = 0
-        return vidInfo, None
+        return vidInfo
 
     feature_path = os.path.join(parent, vidInfo['featureFile'])
     perframes.to_hdf(feature_path, key='perframes', mode='w', format='table', complevel=5)
