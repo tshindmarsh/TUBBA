@@ -375,22 +375,19 @@ class TimelineCanvas(QWidget):
         # Handle scrubbing if active
         if self.is_scrubbing:
             deltaX = (x - self.last_scrub_pos) * 0.5
-            if deltaX < 1:
-                deltaX = deltaX / 2
-
-            if np.sign(deltaX) != self.last_scrub_dir:
-                self.scrub_fractional_frames = 0
 
             currFrame = self.annotator.current_frame_idx
             newFrame = currFrame + deltaX + self.scrub_fractional_frames
             newFrame = max(0, min(total_frames - 1, newFrame))
 
-            if np.sign(deltaX) > 0:
-                self.scrub_fractional_frames = newFrame % 1
-            else:
-                self.scrub_fractional_frames = -1 + (newFrame % 1)
+            # Round to the nearest whole frame, but keep the leftover
+            # fraction so slow/backward drags (lots of tiny or zero-delta
+            # mouseMoveEvents, which Windows fires far more of than macOS)
+            # still accumulate instead of getting rounded away every time.
+            rounded_frame = int(round(newFrame))
+            self.scrub_fractional_frames = newFrame - rounded_frame
 
-            self.annotator.current_frame_idx = int(round(newFrame))
+            self.annotator.current_frame_idx = rounded_frame
             self.annotator.show_frame(self.annotator.current_frame_idx)
 
             self.last_scrub_pos = x
@@ -759,11 +756,27 @@ class VideoAnnotator_noInf(QMainWindow):
             return
 
         try:
-            # If jumping to a different frame (not sequential), reset iterator
+            # PyAV's decode iterator only moves forward, so it can only be
+            # reused cheaply when the requested frame is exactly the next
+            # sequential frame after the last one we actually decoded.
+            # The previous check compared against self.current_frame_idx,
+            # but that's already been set to the target idx by the caller
+            # (see previous_frame/next_frame/slider_moved/timeline clicks)
+            # before show_frame runs, so the diff was always 0 and a real
+            # seek almost never happened - meaning clicking/stepping
+            # backward just kept decoding forward and never actually
+            # moved back. Compare against last_decoded_frame instead.
             if (self.frame_iterator is None or
-                    abs(idx - self.current_frame_idx) > 1):
-                # Seek to nearest keyframe before target
-                timestamp = int(idx / self.fps * av.time_base)
+                    self.last_decoded_frame is None or
+                    idx != self.last_decoded_frame + 1):
+                # Seek to nearest keyframe before target. Because we pass
+                # stream= below, the offset must be expressed in the
+                # stream's own time_base, NOT av.time_base (which is
+                # microsecond units used only for whole-container seeks
+                # without a stream argument). Mixing the two sent seeks to
+                # wildly wrong positions (often near the end of the file).
+                tb = float(self.video_stream.time_base) if self.video_stream.time_base is not None else 1.0 / self.fps
+                timestamp = int((idx / self.fps) / tb)
                 self.container.seek(timestamp, stream=self.video_stream, backward=True)
                 self.frame_iterator = self.container.decode(video=0)
 

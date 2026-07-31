@@ -101,6 +101,10 @@ class ZoomableVideoLabel(QLabel):
         self.offset = QPoint(0, 0)
         self.update_view()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update_view()
+
     def clamp_offset(self):
         """Ensure that we cannot drag the image outside the widget area."""
         if self.pixmap_original is None:
@@ -164,6 +168,11 @@ class BehaviorPanel(QWidget):
                 btn.setStyleSheet(button_style)
                 btn.clicked.connect(self.handle_button_click)
                 btn.behavior_label = label
+                # Prevent this button from grabbing keyboard focus on click.
+                # On Windows, a focused QPushButton intercepts the Space key
+                # (toggling itself) before it can reach the main window's
+                # keyPressEvent, which is what plays/pauses the video.
+                btn.setFocusPolicy(Qt.NoFocus)
                 row_layout.addWidget(btn)
                 self.buttons.append(btn)
 
@@ -383,22 +392,19 @@ class TimelineCanvas(QWidget):
         # Handle scrubbing if active
         if self.is_scrubbing:
             deltaX = (x - self.last_scrub_pos) * 0.5
-            if deltaX < 1:
-                deltaX = deltaX / 2
-
-            if np.sign(deltaX) != self.last_scrub_dir:
-                self.scrub_fractional_frames = 0
 
             currFrame = self.annotator.current_frame_idx
             newFrame = currFrame + deltaX + self.scrub_fractional_frames
             newFrame = max(0, min(total_frames - 1, newFrame))
 
-            if np.sign(deltaX) > 0:
-                self.scrub_fractional_frames = newFrame % 1
-            else:
-                self.scrub_fractional_frames = -1 + (newFrame % 1)
+            # Round to the nearest whole frame, but keep the leftover
+            # fraction so slow/backward drags (lots of tiny or zero-delta
+            # mouseMoveEvents, which Windows fires far more of than macOS)
+            # still accumulate instead of getting rounded away every time.
+            rounded_frame = int(round(newFrame))
+            self.scrub_fractional_frames = newFrame - rounded_frame
 
-            self.annotator.current_frame_idx = int(round(newFrame))
+            self.annotator.current_frame_idx = rounded_frame
             self.annotator.show_frame(self.annotator.current_frame_idx)
 
             self.last_scrub_pos = x
@@ -559,11 +565,13 @@ class VideoAnnotator(QMainWindow):
         self.start_button = QPushButton("Start Annotation (s)")
         self.start_button.clicked.connect(self.start_annotation)
         self.start_button.setStyleSheet(button_style)
+        self.start_button.setFocusPolicy(Qt.NoFocus)
         self.behavior_layout.addWidget(self.start_button)
 
         self.end_button = QPushButton("End Annotation (e)")
         self.end_button.clicked.connect(self.end_annotation)
         self.end_button.setStyleSheet(button_style)
+        self.end_button.setFocusPolicy(Qt.NoFocus)
         self.behavior_layout.addWidget(self.end_button)
 
         behavior_group.setLayout(self.behavior_layout)
@@ -582,6 +590,7 @@ class VideoAnnotator(QMainWindow):
         self.video_selector = QComboBox()
         self.video_selector.addItems([vid['name'] for vid in self.project['videos']])
         self.video_selector.currentIndexChanged.connect(self.switch_video)
+        self.video_selector.setFocusPolicy(Qt.NoFocus)
 
         controls_layout.addWidget(video_select_label)
         controls_layout.addWidget(self.video_selector)
@@ -591,6 +600,7 @@ class VideoAnnotator(QMainWindow):
         self.model_selector = QComboBox()
         self.model_selector.addItems([model for model in self.availModels])
         self.model_selector.currentIndexChanged.connect(self.set_model)
+        self.model_selector.setFocusPolicy(Qt.NoFocus)
 
         controls_layout.addWidget(model_select_label)
         controls_layout.addWidget(self.model_selector)
@@ -598,11 +608,13 @@ class VideoAnnotator(QMainWindow):
         self.play_pause_button = QPushButton("Play")
         self.play_pause_button.clicked.connect(self.toggle_play)
         self.play_pause_button.setStyleSheet(button_style)
+        self.play_pause_button.setFocusPolicy(Qt.NoFocus)
         controls_layout.addWidget(self.play_pause_button)
 
         self.save_button = QPushButton("Save Project")
         self.save_button.clicked.connect(self.save_project)
         self.save_button.setStyleSheet(button_style)
+        self.save_button.setFocusPolicy(Qt.NoFocus)
         controls_layout.addWidget(self.save_button)
 
         # Add train and infer buttons
@@ -610,6 +622,7 @@ class VideoAnnotator(QMainWindow):
         self.train_button.clicked.connect(self.train_TUBBAmodel)
         self.train_button.setStyleSheet("QPushButton {background-color: #17FFD2; color: black; border: 1px solid gray; border-style: outset;"
                                         "border-radius: 4px; padding: 4px; font: bold 12px;} QPushButton:pressed {border-style: inset}")
+        self.train_button.setFocusPolicy(Qt.NoFocus)
         controls_layout.addWidget(self.train_button)
 
         self.predict_button = QPushButton("Run Inference on Video")
@@ -617,6 +630,7 @@ class VideoAnnotator(QMainWindow):
         self.predict_button.setStyleSheet(
             "QPushButton {background-color: #157FFF; color: black; border: 1px solid gray; border-style: outset;"
             "border-radius: 4px; padding: 4px; font: bold 12px;} QPushButton:pressed {border-style: inset}")
+        self.predict_button.setFocusPolicy(Qt.NoFocus)
         controls_layout.addWidget(self.predict_button)
 
         self.batch_predict_button = QPushButton("Run Inference on Project")
@@ -624,6 +638,7 @@ class VideoAnnotator(QMainWindow):
         self.batch_predict_button.setStyleSheet(
             "QPushButton {background-color: #9BFF1A; color: black; border: 1px solid gray; border-style: outset;"
             "border-radius: 4px; padding: 4px; font: bold 12px;} QPushButton:pressed {border-style: inset}")
+        self.batch_predict_button.setFocusPolicy(Qt.NoFocus)
         controls_layout.addWidget(self.batch_predict_button)
 
         # Inference display toggle
@@ -631,6 +646,7 @@ class VideoAnnotator(QMainWindow):
         self.inference_toggle.setChecked(self.display_inference)
         self.inference_toggle.setStyleSheet("color: white; font-weight: bold;")
         self.inference_toggle.stateChanged.connect(self.handle_inference_toggle)
+        self.inference_toggle.setFocusPolicy(Qt.NoFocus)
         controls_layout.addWidget(self.inference_toggle)
 
         controls_layout.addStretch()
@@ -674,6 +690,7 @@ class VideoAnnotator(QMainWindow):
         self.slider = QSlider(Qt.Horizontal)
         self.slider.valueChanged.connect(self.slider_moved)
         self.slider.setStyleSheet(slider_style)
+        self.slider.setFocusPolicy(Qt.NoFocus)
         video_layout.addWidget(self.slider)
 
         video_group.setLayout(video_layout)
@@ -787,19 +804,22 @@ class VideoAnnotator(QMainWindow):
             stream = self.video_stream
             fps = float(self.fps)
 
-            # If jumping more than one frame, reset iterator and seek
+            # stream.time_base is a Fraction (seconds per tick). offset must be in stream.time_base units.
+            tb = 1.0 / fps if stream.time_base is None else float(stream.time_base)
+
+            # PyAV's decode iterator only moves forward. We can only reuse it
+            # cheaply when the requested frame is exactly the next sequential
+            # frame after the last one we decoded (normal forward playback).
+            # Any other case - including stepping back by just one frame,
+            # which the old "> 1" check incorrectly let fall through to
+            # "reuse the iterator" - needs a real seek, otherwise we just
+            # keep decoding forward and the video can never go backward.
             if (self.frame_iterator is None or
                     self.last_decoded_frame is None or
-                    abs(idx - (self.last_decoded_frame or -999999)) > 1):
+                    idx != self.last_decoded_frame + 1):
 
                 # target time in seconds for requested frame index:
                 target_seconds = idx / fps
-
-                # stream.time_base is a Fraction (seconds per tick). offset must be in stream.time_base units.
-                if stream.time_base is None:
-                    tb = 1.0 / fps
-                else:
-                    tb = float(stream.time_base)
 
                 # offset expressed in stream.time_base "ticks"
                 timestamp = int(target_seconds / tb)
