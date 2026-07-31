@@ -3,9 +3,9 @@ import cv2
 import numpy as np
 import pandas as pd
 from matplotlib import cm
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,QMessageBox,
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,QMessageBox, QInputDialog,
                              QPushButton, QSlider, QFileDialog, QListWidget,QMenu, QAction,
-                             QGroupBox, QComboBox,QSizePolicy, QShortcut, QCheckBox)
+                             QGroupBox, QComboBox,QSizePolicy, QShortcut, QCheckBox, QMainWindow)
 from PyQt5.QtGui import QPixmap, QImage, QTransform, QPainter, QColor, QPen, QKeySequence
 from PyQt5.QtCore import Qt, QTimer, QPoint, QRect
 import random
@@ -99,6 +99,10 @@ class ZoomableVideoLabel(QLabel):
         self.offset = QPoint(0, 0)
         self.update_view()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update_view()
+
     def clamp_offset(self):
         """Ensure that we cannot drag the image outside the widget area."""
         if self.pixmap_original is None:
@@ -162,6 +166,11 @@ class BehaviorPanel(QWidget):
                 btn.setStyleSheet(button_style)
                 btn.clicked.connect(self.handle_button_click)
                 btn.behavior_label = label
+                # Prevent this button from grabbing keyboard focus on click.
+                # On Windows, a focused QPushButton intercepts the Space key
+                # (toggling itself) before it can reach the main window's
+                # keyPressEvent, which is what plays/pauses the video.
+                btn.setFocusPolicy(Qt.NoFocus)
                 row_layout.addWidget(btn)
                 self.buttons.append(btn)
 
@@ -458,7 +467,7 @@ class TimelineCanvas(QWidget):
             QMessageBox.warning(self, "Deletion Error",
                                 "Failed to delete annotation. It may already have been removed.")
 
-class VideoAnnotator_noInf(QWidget):
+class VideoAnnotator_noInf(QMainWindow):
     def __init__(self, project):
         super().__init__()
 
@@ -539,11 +548,13 @@ class VideoAnnotator_noInf(QWidget):
         self.start_button = QPushButton("Start Annotation (s)")
         self.start_button.clicked.connect(self.start_annotation)
         self.start_button.setStyleSheet(button_style)
+        self.start_button.setFocusPolicy(Qt.NoFocus)
         self.behavior_layout.addWidget(self.start_button)
 
         self.end_button = QPushButton("End Annotation (e)")
         self.end_button.clicked.connect(self.end_annotation)
         self.end_button.setStyleSheet(button_style)
+        self.end_button.setFocusPolicy(Qt.NoFocus)
         self.behavior_layout.addWidget(self.end_button)
 
         behavior_group.setLayout(self.behavior_layout)
@@ -563,6 +574,7 @@ class VideoAnnotator_noInf(QWidget):
         self.video_selector = QComboBox()
         self.video_selector.addItems([vid['name'] for vid in self.project['videos']])
         self.video_selector.currentIndexChanged.connect(self.switch_video)
+        self.video_selector.setFocusPolicy(Qt.NoFocus)
 
         controls_layout.addWidget(video_select_label)
         controls_layout.addWidget(self.video_selector)
@@ -570,21 +582,25 @@ class VideoAnnotator_noInf(QWidget):
         self.play_pause_button = QPushButton("Play")
         self.play_pause_button.clicked.connect(self.toggle_play)
         self.play_pause_button.setStyleSheet(button_style)
+        self.play_pause_button.setFocusPolicy(Qt.NoFocus)
         controls_layout.addWidget(self.play_pause_button)
 
         self.save_button = QPushButton("Save Project")
         self.save_button.clicked.connect(self.save_project)
         self.save_button.setStyleSheet(button_style)
+        self.save_button.setFocusPolicy(Qt.NoFocus)
         controls_layout.addWidget(self.save_button)
 
         self.add_behavior_button = QPushButton("Add Behavior")
         self.add_behavior_button.clicked.connect(self.add_behavior)
         self.add_behavior_button.setStyleSheet(button_style)
+        self.add_behavior_button.setFocusPolicy(Qt.NoFocus)
         controls_layout.addWidget(self.add_behavior_button)
 
         self.add_video_button = QPushButton("Add Video")
         self.add_video_button.clicked.connect(self.add_video)
         self.add_video_button.setStyleSheet(button_style)
+        self.add_video_button.setFocusPolicy(Qt.NoFocus)
         controls_layout.addWidget(self.add_video_button)
 
         # Add export buttons
@@ -593,6 +609,7 @@ class VideoAnnotator_noInf(QWidget):
         self.export_button.setStyleSheet(
             "QPushButton {background-color: #17FFD2; color: black; border: 1px solid gray; border-style: outset;"
             "border-radius: 4px; padding: 4px; font: bold 12px;} QPushButton:pressed {border-style: inset}")
+        self.export_button.setFocusPolicy(Qt.NoFocus)
         controls_layout.addWidget(self.export_button)
 
         self.batch_export_button = QPushButton("Export All Annotations")
@@ -600,6 +617,7 @@ class VideoAnnotator_noInf(QWidget):
         self.batch_export_button.setStyleSheet(
             "QPushButton {background-color: #00A4FF; color: black; border: 1px solid gray; border-style: outset;"
             "border-radius: 4px; padding: 4px; font: bold 12px;} QPushButton:pressed {border-style: inset}")
+        self.batch_export_button.setFocusPolicy(Qt.NoFocus)
         controls_layout.addWidget(self.batch_export_button)
 
         controls_layout.addStretch()
@@ -644,6 +662,7 @@ class VideoAnnotator_noInf(QWidget):
         self.slider = QSlider(Qt.Horizontal)
         self.slider.valueChanged.connect(self.slider_moved)
         self.slider.setStyleSheet(slider_style)
+        self.slider.setFocusPolicy(Qt.NoFocus)
         video_layout.addWidget(self.slider)
 
         video_group.setLayout(video_layout)
@@ -666,17 +685,43 @@ class VideoAnnotator_noInf(QWidget):
         main_layout.addLayout(left_panel, 1)
         main_layout.addLayout(right_panel, 4)
 
-        self.setLayout(main_layout)
+        central_widget = QWidget()
+        central_widget.setLayout(main_layout)
+        self.setCentralWidget(central_widget)
 
-        self.load_video(self.project['videos'][self.current_video_idx]['folder'])
+        # --- Add menubar section here ---
+        menubar = self.menuBar()
+        file_menu = menubar.addMenu('File')
 
-    def load_video(self, folder):
-        mp4s = [f for f in os.listdir(folder) if f.endswith('.mp4')]
-        if len(mp4s) == 0:
-            print(f"⚠️ No video found in {folder}")
+        # Create actions and connect them
+        save_as_act = QAction('Save Project As...', self)
+        remove_behavior_act = QAction('Remove Behavior...', self)
+        remove_video_act = QAction('Remove Video...', self)
+        import_ann_act = QAction('Import Video Annotations', self)
+        shortcutHelp_act = QAction('Shortcuts...', self)
+
+        save_as_act.triggered.connect(self.save_project_as)
+        remove_behavior_act.triggered.connect(self.remove_behavior)
+        remove_video_act.triggered.connect(self.remove_video)
+        import_ann_act.triggered.connect(self.import_annotations)
+        shortcutHelp_act.triggered.connect(self.show_shortcuts)
+
+        file_menu.addAction(save_as_act)
+        file_menu.addSeparator()
+        file_menu.addAction(remove_behavior_act)
+        file_menu.addAction(remove_video_act)
+        file_menu.addSeparator()
+        file_menu.addAction(import_ann_act)
+        file_menu.addSeparator()
+        file_menu.addAction(shortcutHelp_act)
+
+        v = self.project['videos'][self.current_video_idx]
+        self.load_video(os.path.join(v['folder'], v['name']))
+
+    def load_video(self, video_path):
+        if not os.path.isfile(video_path):
+            print(f"⚠️ Video file not found: {video_path}")
             return
-
-        video_path = os.path.join(folder, mp4s[0])
 
         if self.use_pyav:
             # PyAV backend (Windows/Linux)
@@ -777,7 +822,10 @@ class VideoAnnotator_noInf(QWidget):
                 self.cap.release()
 
         self.current_video_idx = idx
-        self.load_video(self.project['videos'][idx]['folder'])
+        self.video_label.scale = 1.0
+        self.video_label.offset = QPoint(0, 0)
+        v = self.project['videos'][idx]
+        self.load_video(os.path.join(v['folder'], v['name']))
 
         # Try to load inference from file if path exists
         video = self.project['videos'][idx]
@@ -798,7 +846,6 @@ class VideoAnnotator_noInf(QWidget):
             self.current_inference = None
             self.display_inference = False
 
-        self.inference_toggle.setChecked(self.display_inference)
 
     def next_frame(self):
         if self.current_frame_idx < self.total_frames - 1:
@@ -1097,6 +1144,119 @@ class VideoAnnotator_noInf(QWidget):
                 writer.writerow([i] + list(frame_annotations[i]))
 
         print(f"✅ Per-frame annotations exported to {output_path}")
+
+    def import_annotations(self):
+        video = self.project['videos'][self.current_video_idx]
+        video_dir = video['folder']
+
+        # Open file dialog for CSV selection
+        csv_file, _ = QFileDialog.getOpenFileName(
+            self, "Select Annotation CSV", video_dir, "CSV Files (*.csv)")
+
+        if not csv_file:
+            print("No file selected.")
+            return
+
+        # Load annotations from CSV
+        annotations_df = pd.read_csv(csv_file)
+
+        if len(annotations_df) != video['nFrames']:
+            print(f"Mismatch in number of frames! CSV has {len(annotations_df)} rows; video has {video['nFrames']} frames.")
+            return
+
+        existing_behaviors = set(self.project['behaviors'])
+        csv_behaviors = annotations_df.columns
+
+        # Add new behaviors if they don't exist
+        for behavior in csv_behaviors:
+            newName = behavior.strip().capitalize()
+            if newName not in existing_behaviors:
+                self.project['behaviors'].append(newName)
+                print(f"Added new behavior found in annotations: {newName}")
+
+            behavior_col = annotations_df[behavior].fillna(0).astype(int)
+
+            annotations = []
+            current_val = 0
+            start_frame = 0
+
+            for frame_idx, val in enumerate(behavior_col):
+                if val != current_val:
+                    if current_val != 0:
+                        annotations.append([start_frame, frame_idx - 1, current_val])
+                    start_frame = frame_idx
+                    current_val = val
+
+            # Handle behavior continuing to the last frame
+            if current_val != 0:
+                annotations.append([start_frame, len(behavior_col) - 1, current_val])
+
+            # Store annotations
+            video['annotations'][newName] = annotations
+
+        # Remove and replace old panel
+        self.behavior_layout.removeWidget(self.behavior_panel)
+        self.behavior_panel.deleteLater()
+        self.behavior_panel = BehaviorPanel(self.project['behaviors'])
+        self.behavior_layout.insertWidget(0, self.behavior_panel)
+
+        print("Annotations successfully imported.")
+
+    def remove_video(self):
+        video = self.project['videos'][self.current_video_idx]
+        reply = QMessageBox.question(
+            self, 'Remove Video',
+            f"Are you sure you want to remove '{video['name']}' from the project? All annotations will be lost.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+        if reply == QMessageBox.Yes:
+            self.project['videos'].pop(self.current_video_idx)
+            self.video_selector.removeItem(self.current_video_idx)
+            self.current_video_idx = max(0, self.current_video_idx - 1)
+            new_video = self.project['videos'][self.current_video_idx]
+            self.load_video(os.path.join(new_video['folder'], new_video['name']))
+            print("Video successfully removed from the project.")
+
+    def remove_behavior(self):
+        behaviors = self.project['behaviors']
+
+        behavior, ok = QInputDialog.getItem(
+            self, 'Remove Behavior',
+            'Select behavior to remove:', behaviors, 0, False)
+
+        if ok and behavior:
+            reply = QMessageBox.question(
+                self, 'Confirm Remove Behavior',
+                f"Are you sure you want to remove behavior '{behavior}'? All associated annotations will be lost.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+            if reply == QMessageBox.Yes:
+                self.project['behaviors'].remove(behavior)
+                for video in self.project['videos']:
+                    if behavior in video['annotations']:
+                        video['annotations'].pop(behavior)
+
+                # Refresh behavior panel
+                self.behavior_layout.removeWidget(self.behavior_panel)
+                self.behavior_panel.deleteLater()
+                self.behavior_panel = BehaviorPanel(self.project['behaviors'])
+                self.behavior_layout.insertWidget(0, self.behavior_panel)
+
+                print(f"Behavior '{behavior}' successfully removed.")
+
+    def show_shortcuts(self):
+        shortcuts = (
+            "<b>Available Keybind Shortcuts:</b><br><br>"
+            "<b>S</b>: Start annotation<br>"
+            "<b>E</b>: End annotation<br>"
+            "<b>Space</b>: Play/Pause video<br>"
+            "<b>Left Arrow</b>: Previous frame<br>"
+            "<b>Right Arrow</b>: Next frame<br>"
+            f"<b>{self.modifier_name} + S</b>: Save project<br>"
+            f"<b>{self.modifier_name} + Z</b>: Undo last annotation"
+        )
+
+        QMessageBox.information(self, "Keyboard Shortcuts", shortcuts)
 
     def batch_export_annotations(self):
         import os
