@@ -5,7 +5,7 @@ import pandas as pd
 from matplotlib import cm
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,QMessageBox, QInputDialog,
                              QPushButton, QSlider, QFileDialog, QListWidget,QMenu, QAction,
-                             QGroupBox, QComboBox,QSizePolicy, QShortcut, QCheckBox, QMainWindow)
+                             QGroupBox, QComboBox,QSizePolicy, QShortcut, QCheckBox, QMainWindow, QStyle)
 from PyQt5.QtGui import QPixmap, QImage, QTransform, QPainter, QColor, QPen, QKeySequence
 from PyQt5.QtCore import Qt, QTimer, QPoint, QRect
 import random
@@ -128,6 +128,23 @@ class ZoomableVideoLabel(QLabel):
             min_y = self.height() - scaled_size.height()
             max_y = 0
             self.offset.setY(min(max(self.offset.y(), min_y), max_y))
+
+class ClickableSlider(QSlider):
+    """QSlider that jumps straight to the clicked position, matching macOS's
+    native Cocoa slider behavior. Qt's Windows style instead treats a
+    left-click on the groove as a single page-step toward the click, which
+    made the full-video scrubber feel broken/inaccurate compared to the Mac
+    build - clicking near the end only nudged it a little."""
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            if self.orientation() == Qt.Horizontal:
+                pos, span = event.x(), self.width()
+            else:
+                pos, span = event.y(), self.height()
+            value = QStyle.sliderValueFromPosition(self.minimum(), self.maximum(), pos, span)
+            self.setValue(value)
+            event.accept()
+        super().mousePressEvent(event)
 
 class BehaviorPanel(QWidget):
     def __init__(self, behaviors, parent=None):
@@ -497,6 +514,16 @@ class VideoAnnotator_noInf(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.next_frame)
 
+        # Debounce the full-video slider: it spans the whole frame range, so
+        # a fast drag visits many never-cached regions, each needing a real
+        # (blocking) decode. Decoding on every single valueChanged emitted
+        # mid-drag makes playback fall behind the mouse and feel laggy.
+        # Instead, only decode once the drag settles for a moment.
+        self.pending_slider_frame = None
+        self.slider_seek_timer = QTimer(self)
+        self.slider_seek_timer.setSingleShot(True)
+        self.slider_seek_timer.timeout.connect(self._apply_pending_slider_frame)
+
         # --- Shortcuts ---
         save_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
         save_shortcut.activated.connect(self.save_project_feedback)
@@ -657,7 +684,7 @@ class VideoAnnotator_noInf(QMainWindow):
                         }
                     """
 
-        self.slider = QSlider(Qt.Horizontal)
+        self.slider = ClickableSlider(Qt.Horizontal)
         self.slider.valueChanged.connect(self.slider_moved)
         self.slider.setStyleSheet(slider_style)
         self.slider.setFocusPolicy(Qt.NoFocus)
@@ -716,6 +743,32 @@ class VideoAnnotator_noInf(QMainWindow):
         v = self.project['videos'][self.current_video_idx]
         self.load_video(os.path.join(v['folder'], v['name']))
 
+    def _open_video_container(self, video_path):
+        """Open a video for PyAV decoding, preferring hardware-accelerated
+        decode when available. macOS never hits this method - it uses the
+        OpenCV/AVFoundation backend below, which gets Apple's VideoToolbox
+        hardware decoder automatically with no configuration. PyAV decodes
+        purely on the CPU unless a hardware device is explicitly requested,
+        which is most of why Windows/Linux scrubbing has felt slower even
+        with the frame cache in place. allow_software_fallback=True means
+        this is safe to try unconditionally - if the requested hwaccel
+        device isn't available (no compatible GPU/drivers), PyAV silently
+        decodes in software instead, same as before. The broad except is a
+        second safety net in case a given PyAV build/driver combo raises
+        instead of falling back cleanly, since this can't be tested on real
+        Windows hardware from here."""
+        device_type = {'Windows': 'd3d11va', 'Linux': 'vaapi'}.get(self.os_type)
+        if device_type:
+            try:
+                from av.codec.hwaccel import HWAccel
+                hwaccel = HWAccel(device_type=device_type, allow_software_fallback=True)
+                container = av.open(video_path, hwaccel=hwaccel)
+                print(f"🚀 Requested {device_type} hardware-accelerated decode (falls back to software automatically if unavailable).")
+                return container
+            except Exception as e:
+                print(f"⚠️ Hardware-accelerated decode unavailable ({device_type}: {e}); using software decode.")
+        return av.open(video_path)
+
     def load_video(self, video_path):
         if not os.path.isfile(video_path):
             print(f"⚠️ Video file not found: {video_path}")
@@ -723,7 +776,7 @@ class VideoAnnotator_noInf(QMainWindow):
 
         if self.use_pyav:
             # PyAV backend (Windows/Linux)
-            self.container = av.open(video_path)
+            self.container = self._open_video_container(video_path)
             self.video_stream = self.container.streams.video[0]
 
             self.total_frames = self.video_stream.frames
@@ -740,11 +793,23 @@ class VideoAnnotator_noInf(QMainWindow):
             # clicking felt slow and unsmooth - every mouse-move event during
             # a drag was paying that cost again. Caching frames we've already
             # decoded makes revisits (very common while scrubbing back and
-            # forth) essentially instant. Bounded by byte budget, not frame
-            # count, so it self-adjusts to the video's resolution.
+            # forth) essentially instant.
+            #
+            # A fixed ~150MB budget sounds generous but isn't: at 1280x720 it
+            # only holds ~2 seconds of frames, and at 1080p under 1 second -
+            # exactly the "instant for a second, then slow again" pattern.
+            # Size the budget from the actual frame dimensions instead. If
+            # the whole video's decoded frames fit under a generous ceiling,
+            # cache all of it - then nothing ever gets evicted and scrubbing
+            # anywhere in the video is instant, matching the OpenCV/macOS
+            # backend. Otherwise fall back to as much of that ceiling as we
+            # can use, which still covers a much longer stretch than before.
             self.frame_cache = OrderedDict()
             self.frame_cache_bytes = 0
-            self.frame_cache_budget_bytes = 150 * 1024 * 1024  # ~150MB
+            frame_bytes_estimate = max(1, self.video_stream.height * self.video_stream.width * 3)
+            whole_video_bytes = frame_bytes_estimate * max(self.total_frames, 1)
+            cache_ceiling_bytes = 1536 * 1024 * 1024  # ~1.5GB hard ceiling
+            self.frame_cache_budget_bytes = min(whole_video_bytes + frame_bytes_estimate, cache_ceiling_bytes)
         else:
             # OpenCV backend (macOS)
             self.cap = cv2.VideoCapture(video_path)
@@ -1023,7 +1088,18 @@ class VideoAnnotator_noInf(QMainWindow):
         self.timeline.update()
 
     def slider_moved(self):
-        self.current_frame_idx = self.slider.value()
+        # Just record the target and (re)start a short timer instead of
+        # decoding immediately - see the comment in __init__. This keeps the
+        # slider handle itself tracking the mouse instantly; only the actual
+        # video frame lags slightly behind during a fast drag.
+        self.pending_slider_frame = self.slider.value()
+        self.slider_seek_timer.start(30)
+
+    def _apply_pending_slider_frame(self):
+        if self.pending_slider_frame is None:
+            return
+        self.current_frame_idx = self.pending_slider_frame
+        self.pending_slider_frame = None
         self.show_frame(self.current_frame_idx)
 
     def keyPressEvent(self, event):
