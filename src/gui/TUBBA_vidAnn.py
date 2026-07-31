@@ -16,6 +16,7 @@ import seaborn as sns
 import importlib.util
 import av
 import platform
+from collections import OrderedDict
 
 
 class ZoomableVideoLabel(QLabel):
@@ -776,6 +777,19 @@ class VideoAnnotator(QMainWindow):
             # Initialize frame iterator for smooth playback
             self.frame_iterator = None
             self.last_decoded_frame = None
+
+            # Decoded-frame cache: seeking to a non-sequential frame forces
+            # PyAV to decode forward from the previous keyframe, which can
+            # mean decoding an entire GOP (up to a few hundred frames) just
+            # to display one. That's the main reason timeline scrubbing/
+            # clicking felt slow and unsmooth - every mouse-move event during
+            # a drag was paying that cost again. Caching frames we've already
+            # decoded makes revisits (very common while scrubbing back and
+            # forth) essentially instant. Bounded by byte budget, not frame
+            # count, so it self-adjusts to the video's resolution.
+            self.frame_cache = OrderedDict()
+            self.frame_cache_bytes = 0
+            self.frame_cache_budget_bytes = 150 * 1024 * 1024  # ~150MB
         else:
             # OpenCV backend (macOS)
             self.cap = cv2.VideoCapture(video_path)
@@ -795,12 +809,50 @@ class VideoAnnotator(QMainWindow):
         else:
             self._show_frame_opencv(idx)
 
+    def _cache_decoded_frame(self, frame_num, img):
+        """Store a decoded rgb24 ndarray in the frame cache, evicting the
+        oldest entries once the byte budget is exceeded."""
+        if frame_num in self.frame_cache:
+            self.frame_cache.move_to_end(frame_num)
+            return
+        self.frame_cache[frame_num] = img
+        self.frame_cache_bytes += img.nbytes
+        while self.frame_cache_bytes > self.frame_cache_budget_bytes and len(self.frame_cache) > 1:
+            _, evicted = self.frame_cache.popitem(last=False)
+            self.frame_cache_bytes -= evicted.nbytes
+
+    def _display_decoded_frame(self, img, frame_num):
+        """Push a decoded rgb24 ndarray to the video label/slider/timeline."""
+        h, w, ch = img.shape
+        bytes_per_line = ch * w
+        qt_img = QImage(img.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
+        pixmap = QPixmap.fromImage(qt_img)
+
+        self.video_label.setPixmap(pixmap)
+        self.slider.blockSignals(True)
+        # set slider to the *actual* displayed frame number, not the requested idx
+        self.slider.setValue(frame_num)
+        self.slider.blockSignals(False)
+        self.timeline.update()
+
+        # record the actual displayed frame
+        self.last_decoded_frame = frame_num
+
     def _show_frame_pyav(self, idx):
         """PyAV implementation for Windows/Linux (fixed timestamp units and reporting)."""
         if not hasattr(self, 'container') or self.container is None:
             return
 
         try:
+            # Fast path: we've already decoded this frame recently (typical
+            # while scrubbing/clicking back and forth over the same region),
+            # so skip the expensive seek + decode-from-keyframe entirely.
+            cached_img = self.frame_cache.get(idx)
+            if cached_img is not None:
+                self.frame_cache.move_to_end(idx)
+                self._display_decoded_frame(cached_img, idx)
+                return
+
             stream = self.video_stream
             fps = float(self.fps)
 
@@ -841,22 +893,14 @@ class VideoAnnotator(QMainWindow):
                 frame_time = float(frame.pts * stream.time_base)
                 frame_num = int(round(frame_time * fps))
 
+                img = frame.to_ndarray(format='rgb24')
+                # Cache every frame we pass over on the way to idx, not just
+                # the one we display - that's what makes nearby revisits
+                # (the common case while scrubbing) free later on.
+                self._cache_decoded_frame(frame_num, img)
+
                 if frame_num >= idx:
-                    img = frame.to_ndarray(format='rgb24')
-                    h, w, ch = img.shape
-                    bytes_per_line = ch * w
-                    qt_img = QImage(img.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
-                    pixmap = QPixmap.fromImage(qt_img)
-
-                    self.video_label.setPixmap(pixmap)
-                    self.slider.blockSignals(True)
-                    # set slider to the *actual* displayed frame number, not the requested idx
-                    self.slider.setValue(frame_num)
-                    self.slider.blockSignals(False)
-                    self.timeline.update()
-
-                    # record the actual displayed frame
-                    self.last_decoded_frame = frame_num
+                    self._display_decoded_frame(img, frame_num)
                     frame_found = True
                     break
 
@@ -875,20 +919,11 @@ class VideoAnnotator(QMainWindow):
                     frame_time = float(frame.pts * stream.time_base)
                     frame_num = int(round(frame_time * fps))
 
+                    img = frame.to_ndarray(format='rgb24')
+                    self._cache_decoded_frame(frame_num, img)
+
                     if frame_num >= idx:
-                        img = frame.to_ndarray(format='rgb24')
-                        h, w, ch = img.shape
-                        bytes_per_line = ch * w
-                        qt_img = QImage(img.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
-                        pixmap = QPixmap.fromImage(qt_img)
-
-                        self.video_label.setPixmap(pixmap)
-                        self.slider.blockSignals(True)
-                        self.slider.setValue(frame_num)
-                        self.slider.blockSignals(False)
-                        self.timeline.update()
-
-                        self.last_decoded_frame = frame_num
+                        self._display_decoded_frame(img, frame_num)
                         frame_found = True
                         break
 
